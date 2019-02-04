@@ -151,7 +151,7 @@ def run_scenario(complete_rm_sales_results, deposit_percent, other_monthly_expen
 
     for i, e in enumerate(complete_rm_sales_results):
         try:
-            s.price = int(complete_rm_sales_results.loc[i, 'price'])
+            s.price = int(complete_rm_sales_results.price[i])
         except Exception as e:
             s.price = -1
         try:

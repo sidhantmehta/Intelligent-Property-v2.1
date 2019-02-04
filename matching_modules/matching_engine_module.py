@@ -13,10 +13,10 @@ class Matching_engine:
         print('Matching class started ' + str(datetime.datetime.today()))
         self.output_folder = output_folder
         self.cross_join_filepath = self.output_folder / Path(
-            'right-move-data-crossj-' + datetime.datetime.today().strftime('%Y-%m-%d') + '.txt')
+            'houses_for_sale_crossj_' + datetime.datetime.today().strftime('%Y-%m-%d') + '.txt')
         # self.file_loc_rm_data = file_loc_rm_data
         self.result_file_path = self.output_folder / Path(
-            'right-move-data-results-' + datetime.datetime.today().strftime('%Y-%m-%d') + '.txt')
+            'houses_for_sale_data_results_' + datetime.datetime.today().strftime('%Y-%m-%d') + '.txt')
 
         self.file_loc_eat_data = reference_folder / 'eat-drink.txt'
         self.file_loc_airport_data = reference_folder / 'airport.txt'
