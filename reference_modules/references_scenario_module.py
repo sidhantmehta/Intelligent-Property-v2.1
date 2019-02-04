@@ -149,29 +149,43 @@ def run_scenario(complete_rm_sales_results, deposit_percent, other_monthly_expen
         years=years,
         interest_rate=interest_rate)
 
-    for i, e in enumerate(complete_rm_sales_results):
+#PREP TABLE
+    complete_rm_sales_results['mortgage_value'] = 0.00
+    complete_rm_sales_results['deposit_value'] = 0.00
+    complete_rm_sales_results['stamp_duty_value'] = 0.00
+    complete_rm_sales_results['other_purchasing_fees'] = 0.00
+    complete_rm_sales_results['total_investment'] = 0.00
+    complete_rm_sales_results['capital_raised'] = 0.00
+    complete_rm_sales_results['monthly_mortgage'] = 0.00
+    complete_rm_sales_results['monthly_rent'] = 0.00
+    complete_rm_sales_results['other_monthly_expenses'] = 0.00
+    complete_rm_sales_results['total_monthly_expenses'] = 0.00
+    complete_rm_sales_results['monthly_profit'] = 0.00
+    complete_rm_sales_results['annual_roi'] = 0.00
+
+    for i, e in enumerate(complete_rm_sales_results.values):
         try:
             s.price = int(complete_rm_sales_results.price[i])
         except Exception as e:
             s.price = -1
         try:
-            s.monthly_rent = int(complete_rm_sales_results.outcode_average_cost_per_room[i])
+            s.monthly_rent = int(complete_rm_sales_results.outcode_average_cost_per_room_2[i] * complete_rm_sales_results.number_bedrooms[i])
         except Exception as e:
             s.monthly_rent = -1
 
         s.calculate_all()
-        complete_rm_sales_results.loc[i, 'mortgage_value'] = s.mortgage_value
-        complete_rm_sales_results.loc[i, 'deposit_value'] = s.deposit_value
-        complete_rm_sales_results.loc[i, 'stamp_duty_value'] = s.stamp_duty_value
-        complete_rm_sales_results.loc[i, 'other_purchasing_fees'] = s.other_purchasing_fees
-        complete_rm_sales_results.loc[i, 'total_investment'] = s.total_investment
-        complete_rm_sales_results.loc[i, 'capital_raised'] = s.capital_raised
-        complete_rm_sales_results.loc[i, 'monthly_mortgage'] = s.monthly_mortgage
-        complete_rm_sales_results.loc[i, 'monthly_rent'] = s.monthly_rent
-        complete_rm_sales_results.loc[i, 'other_monthly_expenses'] = s.other_monthly_expenses
-        complete_rm_sales_results.loc[i, 'total_monthly_expenses'] = s.total_monthly_expenses
-        complete_rm_sales_results.loc[i, 'monthly_profit'] = s.monthly_profit
-        complete_rm_sales_results.loc[i, 'annual_roi'] = s.annual_roi
+        complete_rm_sales_results['mortgage_value'][i] = s.mortgage_value
+        complete_rm_sales_results['deposit_value'][i] = s.deposit_value
+        complete_rm_sales_results['stamp_duty_value'][i] = s.stamp_duty_value
+        complete_rm_sales_results['other_purchasing_fees'][i] = s.other_purchasing_fees
+        complete_rm_sales_results['total_investment'][i] = s.total_investment
+        complete_rm_sales_results['capital_raised'][i] = s.capital_raised
+        complete_rm_sales_results['monthly_mortgage'][i] = s.monthly_mortgage
+        complete_rm_sales_results['monthly_rent'][i] = s.monthly_rent
+        complete_rm_sales_results['other_monthly_expenses'][i] = s.other_monthly_expenses
+        complete_rm_sales_results['total_monthly_expenses'][i] = s.total_monthly_expenses
+        complete_rm_sales_results['monthly_profit'][i] = s.monthly_profit
+        complete_rm_sales_results['annual_roi'][i] =  s.annual_roi
     print('Scenario analysis complete')
     return complete_rm_sales_results
 

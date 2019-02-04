@@ -19,8 +19,8 @@ output_filename = 'houses_for_sale_data_preclean_'+datetime.datetime.today().str
 subset_filename =Path('connector_scraper_data/outcodes_debug_London_zone1_zone2.txt')
 base_folder = Path('staging_data/')
 postcode_outcode_file_path= Path('connector_scraper_data/debug_postcode_outcodes_with_longlat.csv')
-# manual_file_sales = Path('Data/December 05/right-move-data-preclean-2018-12-03.txt.json')
-# manual_file_rental = Path('Data/December 05/rental_right-move-data-preclean-2018-12-03.txt')
+# manual_file_sales = Path('matching_data/houses_for_sale_data_complete_2019_02_04.txt')
+# manual_file_rental = Path('staging_data/rental_houses_for_sale_data_preclean_2019_02_04_0119.txt')
 '''---------------------------------------------------'''
 
 
@@ -52,5 +52,5 @@ sales_results.reset_index()
 rms.write_to_json(sales_results, Path('matching_data/houses_for_sale_data_complete_'+datetime.date.today().strftime('%Y_%m_%d')+'.txt' ))
 
 end = time.time()
-print('time taken: {:.4f}'.format((end - start)/60))
+print('time taken: {:.4f} mins'.format((end - start)/60))
 

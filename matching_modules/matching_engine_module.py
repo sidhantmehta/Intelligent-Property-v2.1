@@ -13,10 +13,10 @@ class Matching_engine:
         print('Matching class started ' + str(datetime.datetime.today()))
         self.output_folder = output_folder
         self.cross_join_filepath = self.output_folder / Path(
-            'houses_for_sale_crossj_' + datetime.datetime.today().strftime('%Y-%m-%d') + '.txt')
+            'houses_for_sale_crossj_' + datetime.datetime.today().strftime('%Y_%m_%d_%H%M') + '.txt')
         # self.file_loc_rm_data = file_loc_rm_data
         self.result_file_path = self.output_folder / Path(
-            'houses_for_sale_data_results_' + datetime.datetime.today().strftime('%Y-%m-%d') + '.txt')
+            'houses_for_sale_data_results_' + datetime.datetime.today().strftime('%Y_%m_%d_%H%M') + '.txt')
 
         self.file_loc_eat_data = reference_folder / 'eat-drink.txt'
         self.file_loc_airport_data = reference_folder / 'airport.txt'
@@ -28,7 +28,7 @@ class Matching_engine:
 
         # file = open(file_loc_rm_data, 'r', encoding=text_encoding)
         self.rm_data = df_rm_sales
-        print('Capturing RM data load compelte ' + str(datetime.datetime.today()))
+        print('Capturing houses for sale data load compelte ' + str(datetime.datetime.today()))
 
     def set_category_weightings(self, airport, eat, pub_trans, railway, rec):
         self.category_weighting = {'airport': airport, 'eat': eat, 'public_transport': pub_trans, 'railway': railway,
@@ -122,8 +122,8 @@ class Matching_engine:
         self.results_consolidated.rename(
             columns={'total_category_score': 'total_house_score_2'}, inplace=True)
         self.results_consolidated['total_house_score_2'] = (
-                                                                   self.results_consolidated.total_house_score - self.results_consolidated.total_house_score.min()) / (
-                                                                   self.results_consolidated.total_house_score.max() - self.results_consolidated.total_house_score.min())
+                                                                   self.results_consolidated.total_house_score_2 - self.results_consolidated.total_house_score_2.min()) / (
+                                                                   self.results_consolidated.total_house_score_2.max() - self.results_consolidated.total_house_score_2.min())
         print('Result normalization complete . ' + str(datetime.datetime.today()))
         print('Elements ' + str(len(self.results_consolidated)))
 
