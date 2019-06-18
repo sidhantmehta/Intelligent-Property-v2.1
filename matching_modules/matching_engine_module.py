@@ -4,6 +4,7 @@ import math
 import numpy as np
 from pathlib import Path
 import dask.dataframe as dd
+from typing import TextIO
 
 
 class Matching_engine:
@@ -107,9 +108,9 @@ class Matching_engine:
                                                                                         axis='rows')
             # print('Total Category Score created ' + str(datetime.datetime.today()))
 
-            # f_cj: TextIO = open(self.cross_join_filepath, "a", encoding=text_encoding)
-            # f_cj.write(self.crossj.to_csv(header=True, sep='\t', chunksize=1))
-            # f_cj.close()
+            f_cj: TextIO = open(self.cross_join_filepath, "a", encoding=self.text_encoding)
+            f_cj.write(self.crossj.to_csv(header=True, sep='\t', chunksize=1))
+            f_cj.close()
 
             self.results_df = pd.DataFrame(
                 self.crossj.groupby(['ID']).total_category_score.sum().reset_index())  # CHECK ALL FLOWING THROUGH
