@@ -1,0 +1,20 @@
+# Secrets / local config
+.env
+
+# Runtime data
+*.db
+*.sqlite
+*.sqlite3
+logs/
+frontend/export/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/

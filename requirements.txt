@@ -1,0 +1,8 @@
+pandas>=2.2,<3
+requests>=2.31,<3
+SQLAlchemy>=2.0,<3
+PyYAML>=6.0,<7
+python-dotenv>=1.0,<2
+
+# dev / test only
+pytest>=8.0,<9

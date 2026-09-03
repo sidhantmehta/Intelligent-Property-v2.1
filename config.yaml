@@ -1,0 +1,91 @@
+# Default configuration for the v3 geographic amenity scoring model.
+#
+# This file only supplies *defaults*. At runtime, the actual weights and
+# reference points a user is scoring against live in the Claude Artifact
+# frontend's own database (so they can be edited from the UI without
+# touching this repo) and are passed into geo_model.pipeline.run_model()
+# as a config snapshot. This file is what a fresh run falls back to, and
+# what scripts/run_model.py uses when invoked with no overrides.
+
+provider: here
+
+# Each amenity category is looked up via HERE's Discover endpoint using a
+# free-text query near each outcode's centroid, rather than HERE's category
+# ID system. Reason: HERE's numeric category codes (e.g. "100-1000-0001")
+# need to be verified against HERE's live category-system docs, which are
+# not reachable from this environment right now (egress-blocked) -- a
+# free-text query is a robust, easy-to-eyeball substitute that avoids
+# baking in codes nobody has verified. Category IDs can be swapped in later
+# (see geo_model/providers/here_maps.py) once verified against a real HERE
+# account, without changing anything above the provider layer.
+amenity_categories:
+  - key: schools
+    label: "Schools"
+    weight: 5
+    query: "school"
+  - key: cafes
+    label: "Cafes & Coffee"
+    weight: 3
+    query: "cafe"
+  - key: restaurants
+    label: "Restaurants"
+    weight: 3
+    query: "restaurant"
+  - key: pubs_bars
+    label: "Pubs & Bars"
+    weight: 2
+    query: "pub"
+  - key: parks_recreation
+    label: "Parks & Recreation"
+    weight: 2
+    query: "park"
+  - key: supermarkets
+    label: "Supermarkets"
+    weight: 3
+    query: "supermarket"
+  - key: gyms
+    label: "Gyms"
+    weight: 2
+    query: "gym"
+  - key: railway
+    label: "Railway Stations"
+    weight: 5
+    query: "railway station"
+  - key: public_transport
+    label: "Public Transport"
+    weight: 5
+    query: "bus stop"
+  - key: airport
+    label: "Airports"
+    weight: 1
+    query: "airport"
+
+# Distance bins (miles) used to bucket each amenity result before applying
+# a radius weighting, same approach as v2's matching_engine_module.py.
+radius_bins_miles: [0, 1, 3, 5, 10]
+radius_bin_labels: ["less_than_1", "less_than_3", "less_than_5", "less_than_10"]
+
+# How many amenity results (per outcode per category) to fetch and consider.
+max_amenities_per_category: 20
+
+# How far to search for amenities around an outcode centroid.
+search_radius_miles: 10
+
+# Default reference points travel time is scored against. Editable/extendable
+# from the frontend -- this is just the seed list.
+reference_points:
+  - name: "Zig Zag Building"
+    address: "Zig Zag, The, Building 70 Victoria St, London SW1E 6SQ"
+    weight: 5
+  - name: "New Change"
+    address: "New Change, London EC4M 9AF"
+    weight: 5
+
+# HERE routing transport mode for travel-time scoring.
+travel_mode: "publicTransport"
+
+geo_data:
+  # An outcode/category's cached amenities are considered fresh for this
+  # many days before "Refresh Geo Data" will re-fetch them. A missing
+  # outcode/category is always fetched regardless of this setting.
+  staleness_days: 180

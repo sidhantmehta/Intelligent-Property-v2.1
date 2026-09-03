@@ -1,0 +1,639 @@
+<title>Outcode Desirability</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --surface-2:   #f2f1ec;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --border:      rgba(11,11,11,0.10);
+    --accent:      #2a78d6;
+    --accent-ink:  #ffffff;
+    --good:        #0ca30c;
+    --warn:        #fab219;
+    --crit:        #d03b3b;
+    --seq-100: #cde2fb; --seq-200: #9ec5f4; --seq-300: #6da7ec; --seq-400: #3987e5;
+    --seq-500: #256abf; --seq-600: #184f95; --seq-700: #0d366b;
+    --font-ui: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:      #0d0d0d;
+      --surface:   #1a1a19;
+      --surface-2: #232320;
+      --ink:       #ffffff;
+      --ink-2:     #c3c2b7;
+      --muted:     #898781;
+      --grid:      #2c2c2a;
+      --border:    rgba(255,255,255,0.10);
+      --accent:    #3987e5;
+      --accent-ink:#0b0b0b;
+      --good:      #0ca30c;
+      --warn:      #fab219;
+      --crit:      #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:      #0d0d0d;
+    --surface:   #1a1a19;
+    --surface-2: #232320;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --border:    rgba(255,255,255,0.10);
+    --accent:    #3987e5;
+    --accent-ink:#0b0b0b;
+    --good:      #0ca30c;
+    --warn:      #fab219;
+    --crit:      #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  body { background: var(--page); color: var(--ink); font-family: var(--font-ui); }
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+  button { font-family: inherit; }
+  code, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 20px 64px; }
+
+  /* ---------- header ---------- */
+  .topbar {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    flex-wrap: wrap; padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border);
+  }
+  .topbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+  .topbar .sub { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink-2); white-space: nowrap;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+  .pill.example .dot { background: var(--warn); }
+
+  .banner {
+    display: flex; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; font-size: 13px; color: var(--ink-2); margin-bottom: 20px;
+  }
+  .banner strong { color: var(--ink); }
+
+  /* ---------- layout ---------- */
+  .layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  }
+  .card + .card { margin-top: 16px; }
+  .card h2 { font-size: 14px; font-weight: 700; }
+  .card .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  /* ---------- map ---------- */
+  #mapCard svg { width: 100%; height: auto; display: block; background: var(--surface-2); border-radius: 8px; }
+  .map-dot { cursor: pointer; stroke: var(--surface); stroke-width: 1.5; transition: r 0.1s ease; }
+  .map-dot:hover, .map-dot.active { stroke: var(--accent); stroke-width: 2.5; }
+  .map-tooltip {
+    position: absolute; pointer-events: none; background: var(--ink); color: var(--page);
+    font-size: 12px; padding: 6px 9px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, -130%);
+    opacity: 0; transition: opacity 0.1s ease; z-index: 5;
+  }
+  .map-tooltip.show { opacity: 1; }
+  .map-wrap { position: relative; }
+
+  .legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: var(--muted); }
+  .legend .ramp { display: flex; height: 10px; border-radius: 3px; overflow: hidden; flex: 1; }
+  .legend .ramp span { flex: 1; }
+
+  /* ---------- table ---------- */
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  thead th {
+    position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600; color: var(--ink-2);
+    padding: 8px 10px; border-bottom: 1px solid var(--grid); cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  thead th:hover { color: var(--ink); }
+  thead th .arrow { font-size: 10px; margin-left: 3px; color: var(--accent); }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  tbody tr:hover { background: var(--surface-2); }
+  tbody tr.active { outline: 2px solid var(--accent); outline-offset: -2px; }
+  td.outcode { font-family: var(--font-mono); font-weight: 600; }
+  td.score { font-family: var(--font-mono); font-weight: 700; }
+  td.cell { font-family: var(--font-mono); border-radius: 4px; text-align: right; }
+
+  /* ---------- settings ---------- */
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+  .field input[type=text], .field input[type=number] {
+    width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--ink); font-size: 13px; font-family: inherit;
+  }
+  .cat-row { display: grid; grid-template-columns: 1fr 56px; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .cat-row .name { font-size: 13px; }
+  .cat-row .name .q { display: block; font-size: 11px; color: var(--muted); }
+  .cat-row input { width: 56px; padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); font-family: var(--font-mono); text-align: center; }
+
+  .ref-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .ref-row .top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .ref-row .addr { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .ref-row .remove { background: none; border: none; color: var(--crit); cursor: pointer; font-size: 12px; padding: 2px 4px; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); font-size: 13px; font-weight: 600;
+    cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+  .howto textarea {
+    width: 100%; min-height: 74px; resize: vertical; font-family: var(--font-mono); font-size: 11.5px;
+    padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2);
+  }
+  .save-status { font-size: 11.5px; color: var(--muted); margin-top: 6px; min-height: 14px; }
+
+  .loading { padding: 60px 0; text-align: center; color: var(--muted); font-size: 13px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+</style>
+
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <h1>Outcode Desirability</h1>
+      <div class="sub">Geographic amenity &amp; commute scoring for UK postcode outcodes</div>
+    </div>
+    <span class="pill" id="runPill"><span class="dot"></span><span id="runPillText">Loading…</span></span>
+  </div>
+
+  <div class="banner" id="exampleBanner" hidden>
+    <span>&#9432;</span>
+    <span><strong>Example data.</strong> Nobody has run the model against live HERE data yet &mdash; these scores are illustrative. See &ldquo;Run the model&rdquo; in Settings.</span>
+  </div>
+
+  <div class="layout">
+    <div>
+      <div class="card" id="mapCard">
+        <h2>Map</h2>
+        <div class="hint">Positioned by outcode centroid, coloured by total score. Click a marker to highlight it in the table.</div>
+        <div class="map-wrap" style="margin-top:10px;">
+          <svg id="mapSvg" viewBox="0 0 640 520" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="map-tooltip" id="mapTooltip"></div>
+        </div>
+        <div class="legend">
+          <span>Weaker</span>
+          <span class="ramp" id="legendRamp"></span>
+          <span>Stronger</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Scores by outcode</h2>
+        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given outcode at a glance.</div>
+        <div class="table-scroll" style="margin-top:10px;">
+          <table id="resultsTable">
+            <thead><tr id="tableHeadRow"></tr></thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Amenity weights</h2>
+        <div class="hint">Higher weight = matters more to the total score.</div>
+        <div id="categoryFields" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Reference points</h2>
+        <div class="hint">Outcodes are scored on travel time to each of these.</div>
+        <div id="referenceFields" style="margin-top:10px;"></div>
+        <button class="btn" id="addRefBtn" type="button" style="width:100%;">+ Add reference point</button>
+      </div>
+
+      <div class="card">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn primary" id="saveBtn" type="button">Save settings</button>
+          <button class="btn" id="resetBtn" type="button">Reset to defaults</button>
+        </div>
+        <div class="save-status" id="saveStatus"></div>
+      </div>
+
+      <div class="card howto">
+        <h2>Run the model</h2>
+        <div class="hint">This page can't reach external APIs itself &mdash; running the model happens through Claude. Save your settings above, then ask Claude (in a session with the Intelligent-Property-v2.1 repo) to run it:</div>
+        <textarea readonly id="howtoText" style="margin-top:8px;"></textarea>
+        <div class="btn-row">
+          <button class="btn" id="copyBtn" type="button">Copy prompt</button>
+        </div>
+        <div class="hint" style="margin-top:8px;">Leave this page open &mdash; results update live once Claude pushes them back, on this device or any other.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var DEFAULT_CONFIG = {
+    amenity_categories: [
+      { key: "schools", label: "Schools", weight: 5, query: "school" },
+      { key: "cafes", label: "Cafes & Coffee", weight: 3, query: "cafe" },
+      { key: "restaurants", label: "Restaurants", weight: 3, query: "restaurant" },
+      { key: "pubs_bars", label: "Pubs & Bars", weight: 2, query: "pub" },
+      { key: "parks_recreation", label: "Parks & Recreation", weight: 2, query: "park" },
+      { key: "supermarkets", label: "Supermarkets", weight: 3, query: "supermarket" },
+      { key: "gyms", label: "Gyms", weight: 2, query: "gym" },
+      { key: "railway", label: "Railway Stations", weight: 5, query: "railway station" },
+      { key: "public_transport", label: "Public Transport", weight: 5, query: "bus stop" },
+      { key: "airport", label: "Airports", weight: 1, query: "airport" }
+    ],
+    reference_points: [
+      { name: "Zig Zag Building", address: "Zig Zag, The, Building 70 Victoria St, London SW1E 6SQ", weight: 5 },
+      { name: "New Change", address: "New Change, London EC4M 9AF", weight: 5 }
+    ],
+    radius_bins_miles: [0, 1, 3, 5, 10]
+  };
+
+  var SEQ_STEPS = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
+
+  function rampColor(t) {
+    if (t == null || isNaN(t)) return "transparent";
+    t = Math.max(0, Math.min(1, t));
+    var idx = Math.min(SEQ_STEPS.length - 1, Math.floor(t * SEQ_STEPS.length));
+    return SEQ_STEPS[idx];
+  }
+  function rampTextColor(t) {
+    return (t != null && t > 0.55) ? "#ffffff" : "var(--ink)";
+  }
+
+  var state = {
+    db: null,
+    config: null,
+    resultsMeta: null,
+    outcodes: [],
+    sortKey: "total_score",
+    sortDir: "desc",
+    activeOutcode: null
+  };
+
+  function travelKey(name) { return "travel_time::" + name; }
+
+  function columns() {
+    var cols = [];
+    (state.config ? state.config.amenity_categories : DEFAULT_CONFIG.amenity_categories).forEach(function (c) {
+      cols.push({ key: c.key, label: c.label });
+    });
+    (state.config ? state.config.reference_points : DEFAULT_CONFIG.reference_points).forEach(function (r) {
+      cols.push({ key: travelKey(r.name), label: r.name, isTravel: true });
+    });
+    return cols;
+  }
+
+  // ---------------- rendering: header pill / banner ----------------
+  function renderStatus() {
+    var pill = document.getElementById("runPill");
+    var text = document.getElementById("runPillText");
+    var banner = document.getElementById("exampleBanner");
+    if (!state.resultsMeta) {
+      text.textContent = "No results yet";
+      pill.classList.add("example");
+      banner.hidden = true;
+      return;
+    }
+    var when = state.resultsMeta.created_at ? new Date(state.resultsMeta.created_at) : null;
+    var whenStr = when ? when.toLocaleString() : "unknown time";
+    text.textContent = (state.outcodes.length) + " outcodes · " + whenStr;
+    pill.classList.toggle("example", !!state.resultsMeta.is_example);
+    banner.hidden = !state.resultsMeta.is_example;
+  }
+
+  // ---------------- rendering: map ----------------
+  function renderMap() {
+    var svg = document.getElementById("mapSvg");
+    var W = 640, H = 520, PAD = 24;
+    svg.innerHTML = "";
+    if (!state.outcodes.length) {
+      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">No results to plot yet</text>';
+      return;
+    }
+    var lats = state.outcodes.map(function (o) { return o.lat; });
+    var longs = state.outcodes.map(function (o) { return o.long; });
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLong = Math.min.apply(null, longs), maxLong = Math.max.apply(null, longs);
+    var latSpan = (maxLat - minLat) || 1, longSpan = (maxLong - minLong) || 1;
+
+    function project(o) {
+      var x = PAD + ((o.long - minLong) / longSpan) * (W - 2 * PAD);
+      var y = PAD + ((maxLat - o.lat) / latSpan) * (H - 2 * PAD);
+      return [x, y];
+    }
+
+    var ns = "http://www.w3.org/2000/svg";
+    state.outcodes.forEach(function (o) {
+      var xy = project(o);
+      var c = document.createElementNS(ns, "circle");
+      c.setAttribute("cx", xy[0].toFixed(1));
+      c.setAttribute("cy", xy[1].toFixed(1));
+      c.setAttribute("r", o.outcode === state.activeOutcode ? 8 : 6);
+      c.setAttribute("fill", rampColor(o.total_score));
+      c.setAttribute("class", "map-dot" + (o.outcode === state.activeOutcode ? " active" : ""));
+      c.dataset.outcode = o.outcode;
+      c.addEventListener("mouseenter", function (ev) { showTooltip(ev, o); });
+      c.addEventListener("mousemove", function (ev) { moveTooltip(ev); });
+      c.addEventListener("mouseleave", hideTooltip);
+      c.addEventListener("click", function () { setActive(o.outcode, true); });
+      svg.appendChild(c);
+    });
+  }
+
+  function showTooltip(ev, o) {
+    var tip = document.getElementById("mapTooltip");
+    tip.textContent = o.outcode + " · " + o.total_score.toFixed(3);
+    tip.classList.add("show");
+    moveTooltip(ev);
+  }
+  function moveTooltip(ev) {
+    var tip = document.getElementById("mapTooltip");
+    var wrap = document.querySelector(".map-wrap").getBoundingClientRect();
+    tip.style.left = (ev.clientX - wrap.left) + "px";
+    tip.style.top = (ev.clientY - wrap.top) + "px";
+  }
+  function hideTooltip() { document.getElementById("mapTooltip").classList.remove("show"); }
+
+  function renderLegend() {
+    var ramp = document.getElementById("legendRamp");
+    ramp.innerHTML = SEQ_STEPS.map(function (c) { return '<span style="background:' + c + '"></span>'; }).join("");
+  }
+
+  // ---------------- rendering: table ----------------
+  function sortedOutcodes() {
+    var cols = columns();
+    var list = state.outcodes.slice();
+    var key = state.sortKey, dir = state.sortDir === "asc" ? 1 : -1;
+    list.sort(function (a, b) {
+      var av, bv;
+      if (key === "outcode") { av = a.outcode; bv = b.outcode; return dir * av.localeCompare(bv); }
+      if (key === "total_score") { av = a.total_score; bv = b.total_score; }
+      else {
+        av = (a.categories[key] || {}).normalized_score;
+        bv = (b.categories[key] || {}).normalized_score;
+        av = av == null ? -1 : av; bv = bv == null ? -1 : bv;
+      }
+      return dir * (av - bv);
+    });
+    return list;
+  }
+
+  function renderTableHead() {
+    var row = document.getElementById("tableHeadRow");
+    var cols = [{ key: "outcode", label: "Outcode" }, { key: "total_score", label: "Total" }].concat(columns());
+    row.innerHTML = "";
+    cols.forEach(function (c) {
+      var th = document.createElement("th");
+      th.textContent = c.label;
+      if (state.sortKey === c.key) {
+        var arrow = document.createElement("span");
+        arrow.className = "arrow";
+        arrow.textContent = state.sortDir === "asc" ? "↑" : "↓";
+        th.appendChild(arrow);
+      }
+      th.addEventListener("click", function () {
+        if (state.sortKey === c.key) { state.sortDir = state.sortDir === "asc" ? "desc" : "asc"; }
+        else { state.sortKey = c.key; state.sortDir = "desc"; }
+        renderTable();
+      });
+      row.appendChild(th);
+    });
+  }
+
+  function renderTable() {
+    renderTableHead();
+    var cols = columns();
+    var body = document.getElementById("tableBody");
+    body.innerHTML = "";
+    if (!state.outcodes.length) {
+      var tr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = cols.length + 2;
+      td.textContent = "No results yet.";
+      td.style.color = "var(--muted)";
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+    sortedOutcodes().forEach(function (o) {
+      var tr = document.createElement("tr");
+      tr.className = o.outcode === state.activeOutcode ? "active" : "";
+      tr.addEventListener("click", function () { setActive(o.outcode, false); });
+
+      var tdOut = document.createElement("td");
+      tdOut.className = "outcode"; tdOut.textContent = o.outcode;
+      tr.appendChild(tdOut);
+
+      var tdScore = document.createElement("td");
+      tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);
+      tr.appendChild(tdScore);
+
+      cols.forEach(function (c) {
+        var cell = o.categories[c.key];
+        var td = document.createElement("td");
+        td.className = "cell";
+        if (cell) {
+          td.style.background = rampColor(cell.normalized_score);
+          td.style.color = rampTextColor(cell.normalized_score);
+          td.textContent = c.isTravel
+            ? (cell.raw_score >= 0 ? cell.raw_score.toFixed(0) + "m" : "–")
+            : cell.raw_score.toFixed(2);
+        } else {
+          td.textContent = "–";
+        }
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  function setActive(outcode, fromMap) {
+    state.activeOutcode = outcode;
+    renderMap();
+    renderTable();
+    if (!fromMap) {
+      var dot = document.querySelector('.map-dot[data-outcode="' + CSS.escape(outcode) + '"]');
+      if (dot) { dot.scrollIntoView && dot.scrollIntoView({ block: "nearest" }); }
+    } else {
+      var row = Array.prototype.find.call(document.querySelectorAll("#tableBody tr"), function (r) {
+        return r.querySelector(".outcode") && r.querySelector(".outcode").textContent === outcode;
+      });
+      if (row) row.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // ---------------- rendering: settings ----------------
+  function renderSettings() {
+    var cfg = state.config || DEFAULT_CONFIG;
+
+    var catWrap = document.getElementById("categoryFields");
+    catWrap.innerHTML = "";
+    cfg.amenity_categories.forEach(function (c, i) {
+      var row = document.createElement("div");
+      row.className = "cat-row";
+      row.innerHTML =
+        '<div class="name">' + escapeHtml(c.label) + '<span class="q">query: "' + escapeHtml(c.query) + '"</span></div>' +
+        '<input type="number" min="0" max="10" step="1" data-idx="' + i + '" data-field="weight" value="' + c.weight + '">';
+      catWrap.appendChild(row);
+    });
+
+    var refWrap = document.getElementById("referenceFields");
+    refWrap.innerHTML = "";
+    cfg.reference_points.forEach(function (r, i) {
+      var row = document.createElement("div");
+      row.className = "ref-row";
+      row.innerHTML =
+        '<div class="top">' +
+        '<input type="text" data-idx="' + i + '" data-field="name" value="' + escapeAttr(r.name) + '" style="font-weight:600;border:none;background:none;padding:0;width:auto;flex:1;">' +
+        '<span style="display:flex;align-items:center;gap:6px;">' +
+        '<label style="font-size:11px;color:var(--muted);">wt</label>' +
+        '<input type="number" min="0" max="10" step="1" data-idx="' + i + '" data-field="weight" value="' + r.weight + '" style="width:44px;">' +
+        '<button class="remove" data-idx="' + i + '" type="button" title="Remove">✕</button>' +
+        '</span></div>' +
+        '<input type="text" data-idx="' + i + '" data-field="address" value="' + escapeAttr(r.address) + '" class="addr-input" style="margin-top:6px;border:none;background:none;padding:0;width:100%;color:var(--muted);font-size:11.5px;">';
+      refWrap.appendChild(row);
+    });
+
+    document.getElementById("howtoText").value =
+      "Read the current settings from the Outcode Desirability artifact's db " +
+      "(config/current), run scripts/run_model.py against them in the " +
+      "Intelligent-Property-v2.1 repo, then write the results back to the " +
+      "artifact's db (results/latest + results/latest/outcodes) so this page updates.";
+  }
+
+  function escapeHtml(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+
+  function readFormIntoConfig() {
+    var cfg = JSON.parse(JSON.stringify(state.config || DEFAULT_CONFIG));
+    document.querySelectorAll('#categoryFields input[data-field="weight"]').forEach(function (input) {
+      var i = Number(input.dataset.idx);
+      cfg.amenity_categories[i].weight = Number(input.value) || 0;
+    });
+    document.querySelectorAll('#referenceFields [data-field]').forEach(function (input) {
+      var i = Number(input.dataset.idx);
+      var field = input.dataset.field;
+      if (field === "weight") cfg.reference_points[i].weight = Number(input.value) || 0;
+      else cfg.reference_points[i][field] = input.value;
+    });
+    return cfg;
+  }
+
+  // ---------------- db wiring ----------------
+  function outcodesFromSnapshot(snap) {
+    return snap.docs.map(function (d) { return d.data(); }).filter(Boolean);
+  }
+
+  function subscribeDb(db) {
+    db.doc("config/current").onSnapshot(function (snap) {
+      state.config = snap.exists ? snap.data() : DEFAULT_CONFIG;
+      renderSettings();
+      renderTableHead();
+      renderTable();
+      renderMap();
+    }, function (err) { console.error("config snapshot error", err); });
+
+    db.doc("results/latest").onSnapshot(function (snap) {
+      state.resultsMeta = snap.exists ? snap.data() : null;
+      renderStatus();
+    }, function (err) { console.error("results meta snapshot error", err); });
+
+    db.collection("results/latest/outcodes").limit(1000).onSnapshot(function (snap) {
+      state.outcodes = outcodesFromSnapshot(snap);
+      renderStatus();
+      renderMap();
+      renderTable();
+    }, function (err) { console.error("results outcodes snapshot error", err); });
+  }
+
+  function wireButtons() {
+    document.getElementById("saveBtn").addEventListener("click", function () {
+      var status = document.getElementById("saveStatus");
+      if (!state.db) { status.textContent = "Can't save: this view has no database access."; return; }
+      var cfg = readFormIntoConfig();
+      cfg.updated_at = new Date().toISOString();
+      status.textContent = "Saving…";
+      state.db.doc("config/current").set(cfg).then(function () {
+        status.textContent = "Saved " + new Date().toLocaleTimeString();
+      }, function (err) {
+        status.textContent = "Save failed: " + (err && err.message ? err.message : err);
+      });
+    });
+
+    document.getElementById("resetBtn").addEventListener("click", function () {
+      state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+      renderSettings();
+      document.getElementById("saveStatus").textContent = "Reverted locally — click “Save settings” to keep it.";
+    });
+
+    document.getElementById("addRefBtn").addEventListener("click", function () {
+      var cfg = readFormIntoConfig();
+      cfg.reference_points.push({ name: "New destination", address: "", weight: 5 });
+      state.config = cfg;
+      renderSettings();
+    });
+
+    document.getElementById("referenceFields").addEventListener("click", function (ev) {
+      if (!ev.target.classList.contains("remove")) return;
+      var cfg = readFormIntoConfig();
+      cfg.reference_points.splice(Number(ev.target.dataset.idx), 1);
+      state.config = cfg;
+      renderSettings();
+    });
+
+    document.getElementById("copyBtn").addEventListener("click", function () {
+      var ta = document.getElementById("howtoText");
+      ta.select();
+      try {
+        navigator.clipboard.writeText(ta.value).then(function () {
+          document.getElementById("copyBtn").textContent = "Copied!";
+          setTimeout(function () { document.getElementById("copyBtn").textContent = "Copy prompt"; }, 1500);
+        });
+      } catch (e) { /* selection above is the fallback */ }
+    });
+  }
+
+  function init() {
+    renderSettings();
+    renderStatus();
+    renderTableHead();
+    renderTable();
+    renderMap();
+    renderLegend();
+    wireButtons();
+
+    if (!window.claude || !window.claude.use) return;
+    window.claude.use("db").then(function (db) {
+      state.db = db;
+      if (!db) {
+        document.getElementById("saveStatus").textContent = "This view has no database access — settings won't persist.";
+        return;
+      }
+      subscribeDb(db);
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
