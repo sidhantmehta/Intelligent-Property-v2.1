@@ -307,6 +307,46 @@ class SectorPrice(Base):
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class EpcCertificate(Base):
+    """One dwelling's current Energy Performance Certificate, filtered
+    down to our outcode scope at ingest time (geo_model.epc_data). Raw/
+    uncomputed -- geo_model.domain.floor_area aggregates these into
+    SectorFloorArea rows. Deduped to one row per dwelling at ingest time
+    (by UPRN, falling back to address) -- a dwelling re-assessed over the
+    years would otherwise appear multiple times and skew the median."""
+
+    __tablename__ = "epc_certificates"
+
+    dwelling_key: Mapped[str] = mapped_column(String(128), primary_key=True)  # UPRN, or a normalized address when UPRN is absent
+    postcode: Mapped[str] = mapped_column(String(16), nullable=False)
+    sector: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    outcode: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F (mapped from EPC's PROPERTY_TYPE+BUILT_FORM)
+    total_floor_area_m2: Mapped[float] = mapped_column(Float, nullable=False)
+    lodgement_date: Mapped[dt.date] = mapped_column(nullable=False, index=True)
+
+
+class SectorFloorArea(Base):
+    """Computed (not raw) median floor area for one postcode sector +
+    property type, produced by geo_model.domain.floor_area from
+    EpcCertificate. ``estimate_grain`` mirrors SectorPrice's -- whether
+    the number came from the sector's own certificates or backed off to
+    its parent outcode's (sparse-sector fallback)."""
+
+    __tablename__ = "sector_floor_areas"
+    __table_args__ = (
+        UniqueConstraint("sector", "property_type", name="uq_sector_floor_area_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector: Mapped[str] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=False, index=True)
+    property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F
+    median_floor_area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    certificate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    estimate_grain: Mapped[str] = mapped_column(String(16), nullable=False)  # "sector" | "outcode" | "none"
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GrammarSchool(Base):
     """A curated, pre-geocoded dataset entry (selective state grammar /
     partially-selective consortium schools register) -- same shape and
