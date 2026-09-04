@@ -98,8 +98,9 @@
 
   /* ---------- map ---------- */
   #mapCard svg { width: 100%; height: auto; display: block; background: #eef2f6; border-radius: 8px; }
-  .map-dot { cursor: pointer; stroke: #ffffff; stroke-width: 1.2; fill-opacity: 0.88; transition: r 0.1s ease; }
-  .map-dot:hover, .map-dot.active { stroke: var(--accent); stroke-width: 2.5; fill-opacity: 1; }
+  .map-dot { cursor: pointer; stroke: #ffffff; stroke-width: 1.2; fill-opacity: 0.88; transition: r 0.1s ease, fill 0.1s ease; }
+  .map-dot:hover { stroke: var(--accent); stroke-width: 2.5; fill-opacity: 1; }
+  .map-dot.active { fill: #dc2626 !important; stroke: #7a1210; stroke-width: 2.5; fill-opacity: 1; }
   .map-grid line { stroke: #d3dbe2; stroke-width: 1; }
   .map-grid text { fill: #8a939c; font-size: 9px; font-family: var(--font-mono); }
   .map-land { fill: #f7f5ef; stroke: #c7cdd3; stroke-width: 0.6; }
@@ -147,7 +148,18 @@
   tbody tr.active { outline: 2px solid var(--accent); outline-offset: -2px; }
   td.outcode { font-family: var(--font-mono); font-weight: 600; }
   td.score { font-family: var(--font-mono); font-weight: 700; }
-  td.cell { font-family: var(--font-mono); border-radius: 4px; text-align: right; }
+  td.cell { font-family: var(--font-mono); border-radius: 4px; text-align: right; cursor: pointer; }
+
+  tr.drill-row td { padding: 0; border-bottom: 1px solid var(--grid); }
+  .drill-panel { background: var(--surface-2); padding: 10px 14px 12px; }
+  .drill-title { font-size: 12px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .drill-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; }
+  .drill-empty { font-size: 12px; color: var(--muted); }
+  .drill-table { width: 100%; max-width: 480px; border-collapse: collapse; font-size: 12px; }
+  .drill-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 3px 8px 3px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  .drill-table td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  .drill-table td.d-name { font-family: var(--font-ui); white-space: normal; }
+  .drill-table td.d-num { font-family: var(--font-mono); text-align: right; }
 
   /* ---------- settings ---------- */
   .field { margin-bottom: 12px; }
@@ -317,7 +329,9 @@
     activeOutcode: null,
     filters: [],
     pageSize: 50,
-    currentPage: 1
+    currentPage: 1,
+    drillOutcode: null,
+    drillCategory: null
   };
 
   var FILTER_OPS = [
@@ -766,10 +780,91 @@
         } else {
           td.textContent = "–";
         }
+        td.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          toggleDrilldown(o.outcode, c.key);
+          setActive(o.outcode, false);
+        });
         tr.appendChild(td);
       });
       body.appendChild(tr);
+
+      if (state.drillOutcode === o.outcode) {
+        var drillCol = cols.find(function (cc) { return cc.key === state.drillCategory; });
+        if (drillCol) body.appendChild(renderDrillRow(o, drillCol));
+      }
     });
+  }
+
+  function toggleDrilldown(outcode, categoryKey) {
+    if (state.drillOutcode === outcode && state.drillCategory === categoryKey) {
+      state.drillOutcode = null;
+      state.drillCategory = null;
+    } else {
+      state.drillOutcode = outcode;
+      state.drillCategory = categoryKey;
+    }
+  }
+
+  function renderDrillRow(o, c) {
+    var tr = document.createElement("tr");
+    tr.className = "drill-row";
+    var td = document.createElement("td");
+    td.colSpan = columns().length + 2;
+
+    var panel = document.createElement("div");
+    panel.className = "drill-panel";
+
+    var title = document.createElement("div");
+    title.className = "drill-title";
+    var titleText = document.createElement("span");
+    titleText.textContent = c.label + " — " + o.outcode;
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button"; closeBtn.className = "drill-close"; closeBtn.textContent = "Close ✕";
+    closeBtn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      state.drillOutcode = null;
+      state.drillCategory = null;
+      renderTable();
+    });
+    title.appendChild(titleText);
+    title.appendChild(closeBtn);
+    panel.appendChild(title);
+
+    if (c.isTravel) {
+      var cell = o.categories[c.key];
+      var refPoints = state.config ? state.config.reference_points : DEFAULT_CONFIG.reference_points;
+      var refPoint = refPoints.find(function (r) { return r.name === c.label; });
+      var mins = cell && cell.raw_score >= 0 ? cell.raw_score.toFixed(0) + " min" : "no route found";
+      var info = document.createElement("div");
+      info.className = "drill-empty";
+      info.textContent = "Travel time to " + c.label + (refPoint ? " (" + refPoint.address + ")" : "") + ": " + mins;
+      panel.appendChild(info);
+    } else {
+      var list = (o.amenities && o.amenities[c.key]) || [];
+      if (!list.length) {
+        var empty = document.createElement("div");
+        empty.className = "drill-empty";
+        empty.textContent = "No " + c.label.toLowerCase() + " found within the search radius.";
+        panel.appendChild(empty);
+      } else {
+        var table = document.createElement("table");
+        table.className = "drill-table";
+        table.innerHTML =
+          "<thead><tr><th>Name</th><th>Distance</th><th>Score contribution</th></tr></thead><tbody>" +
+          list.map(function (a) {
+            return "<tr><td class=\"d-name\">" + escapeHtml(a.n) + "</td>" +
+              "<td class=\"d-num\">" + a.d.toFixed(2) + " mi</td>" +
+              "<td class=\"d-num\">" + a.s.toFixed(2) + "</td></tr>";
+          }).join("") +
+          "</tbody>";
+        panel.appendChild(table);
+      }
+    }
+
+    td.appendChild(panel);
+    tr.appendChild(td);
+    return tr;
   }
 
   function setActive(outcode, fromMap) {

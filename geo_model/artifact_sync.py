@@ -17,7 +17,14 @@ from sqlalchemy import select
 
 from geo_model.config import ModelConfig, load_model_config
 from geo_model.data.db import get_session
-from geo_model.data.models import Outcode, RunConfig, RunResult
+from geo_model.data.models import Amenity, Outcode, RunConfig, RunResult
+from geo_model.domain import scoring
+
+# How many of the nearest amenities to embed per outcode/category in the
+# Artifact export, for the table's click-to-drill-down view. Capped well
+# below max_amenities_per_category (20) to keep each outcode doc's payload
+# small -- the closest handful is what a drill-down view actually needs.
+MAX_DRILLDOWN_AMENITIES = 10
 
 
 def config_to_artifact_doc(config: ModelConfig) -> dict:
@@ -96,6 +103,37 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
             for o in session.scalars(select(Outcode).where(Outcode.outcode.in_([r.outcode for r in results])))
         }
 
+        # Nearest-amenity detail per outcode/category, for the frontend's
+        # click-a-cell drill-down. Amenity rows have no run_id (they're a
+        # standing cache, not run-scoped), so this reads whatever's
+        # currently cached for these outcodes -- the same rows run_model
+        # itself scored against, unless a refresh has since replaced them.
+        radius_bins = json.loads(run_config.radius_bins_json)
+        amenity_rows = session.scalars(
+            select(Amenity).where(Amenity.outcode.in_(outcode_rows.keys())).order_by(Amenity.distance_m)
+        )
+        amenities_by_outcode: dict[str, dict[str, list[dict]]] = {}
+        for a in amenity_rows:
+            o = outcode_rows.get(a.outcode)
+            if o is None:
+                continue
+            by_category = amenities_by_outcode.setdefault(a.outcode, {})
+            bucket = by_category.setdefault(a.category_key, [])
+            if len(bucket) >= MAX_DRILLDOWN_AMENITIES:
+                continue
+            distance_miles = (
+                a.distance_m / 1609.34 if a.distance_m is not None
+                else scoring.haversine_miles(o.lat, o.long, a.lat, a.long)
+            )
+            # Short keys (n/d/s) deliberately -- this list is duplicated
+            # into every one of ~700 outcode documents, so field-name
+            # overhead adds up fast.
+            bucket.append({
+                "n": a.title,
+                "d": round(distance_miles, 3),
+                "s": round(scoring.radius_weight(distance_miles, radius_bins), 3),
+            })
+
         outcode_docs = []
         for r in results:
             o = outcode_rows.get(r.outcode)
@@ -115,6 +153,7 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "long": o.long,
                 "total_score": r.total_score,
                 "categories": categories,
+                "amenities": amenities_by_outcode.get(r.outcode, {}),
             }
             (outcodes_dir / f"{r.outcode}.json").write_text(json.dumps(doc))
             outcode_docs.append(doc)
