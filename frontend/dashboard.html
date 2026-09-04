@@ -1511,13 +1511,36 @@
     }
   }
 
+  // The db capability's Query.limit() caps at 1000 (a single query can
+  // never return more), but this scope has ~2,400 sectors -- so one
+  // .limit(1000).get() isn't enough, and there's no cursor to page a
+  // single query further. Instead this splits the collection into 3
+  // non-overlapping ranges over the "sector" field (already indexed for
+  // free scans, no orderBy needed) via .where() bounds, each comfortably
+  // under 1000 docs for the current ~2,400-sector scope, and merges the
+  // results. If the scope grows a lot further, add more split points.
+  var SECTOR_RANGE_SPLITS = ["GU8 5", "SE1 0"];
+
   function loadSectors(db) {
-    db.collection("results/latest/sectors").limit(3000).get().then(function (snap) {
-      state.sectors = sectorsFromSnapshot(snap);
+    var col = db.collection("results/latest/sectors");
+    var bounds = [null].concat(SECTOR_RANGE_SPLITS).concat([null]);
+    var queries = [];
+    for (var i = 0; i < bounds.length - 1; i++) {
+      var q = col;
+      if (bounds[i] != null) q = q.where("sector", ">=", bounds[i]);
+      if (bounds[i + 1] != null) q = q.where("sector", "<", bounds[i + 1]);
+      queries.push(q.limit(1000).get());
+    }
+    Promise.all(queries).then(function (snaps) {
+      var byId = {};
+      snaps.forEach(function (snap) {
+        sectorsFromSnapshot(snap).forEach(function (o) { byId[o.sector] = o; });
+      });
+      state.sectors = Object.keys(byId).map(function (k) { return byId[k]; });
       state.sectorsError = null;
       renderOutcodesOrShowError();
     }, function (err) {
-      console.error("results outcodes fetch error", err);
+      console.error("results sectors fetch error", err);
       state.sectorsError = (err && err.code) ? (err.code + (err.message ? ": " + err.message : "")) : "load failed";
       renderStatus();
       renderMap();
