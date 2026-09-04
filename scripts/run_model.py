@@ -37,12 +37,14 @@ from geo_model.config import load_model_config  # noqa: E402
 from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
 from geo_model.postcodes import seed_outcodes_table  # noqa: E402
+from geo_model.private_schools import import_private_schools  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
 from geo_model.usage_report import current_calendar_month_start, summarize_usage  # noqa: E402
 
 logger = get_logger(__name__)
 
 DEFAULT_OUTCODES_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes.txt"
+DEFAULT_PRIVATE_SCHOOLS_CSV = REPO_ROOT / "reference_data" / "private_schools_greater_london.csv"
 DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_london_sample.txt"
 REFERENCE_DATA_DIR = REPO_ROOT / "reference_data"
 
@@ -70,6 +72,13 @@ def cmd_seed_legacy(args: argparse.Namespace) -> None:
     with get_session() as session:
         counts = seed_amenities_from_legacy_data(session, REFERENCE_DATA_DIR)
     print(json.dumps(counts, indent=2))
+
+
+def cmd_import_private_schools(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    with get_session() as session:
+        result = import_private_schools(session, args.csv)
+    print(json.dumps(result, indent=2))
 
 
 def cmd_refresh_geo_data(args: argparse.Namespace) -> None:
@@ -128,6 +137,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("seed-legacy", help="Import v2's reference_data/*.txt as a stale-flagged starting amenity cache")
+
+    p = sub.add_parser("import-private-schools", help="Import/geocode the private schools register (reference_data/private_schools_greater_london.csv)")
+    p.add_argument("--csv", type=Path, default=DEFAULT_PRIVATE_SCHOOLS_CSV)
+    p.set_defaults(func=cmd_import_private_schools)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),

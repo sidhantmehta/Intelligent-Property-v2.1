@@ -25,8 +25,10 @@ from geo_model.logging_setup import get_logger
 logger = get_logger(__name__)
 
 POSTCODES_IO_OUTCODE_URL = "https://api.postcodes.io/outcodes/{}"
+POSTCODES_IO_BULK_POSTCODES_URL = "https://api.postcodes.io/postcodes"
 _TIMEOUT_SECONDS = 15
 _MAX_WORKERS = 10
+_POSTCODE_BATCH_SIZE = 100
 
 
 def load_outcode_list(outcodes_file: Path) -> list[str]:
@@ -72,6 +74,40 @@ def fetch_outcode_centroids(outcodes: list[str]) -> dict[str, tuple[float, float
                 result[outcode] = centroid
             if i % 100 == 0 or i == len(outcodes):
                 logger.info("postcodes.io: resolved %d/%d outcodes so far (%d looked up)", len(result), len(outcodes), i)
+
+    return result
+
+
+def fetch_postcode_centroids(postcodes: list[str]) -> dict[str, tuple[float, float]]:
+    """Looks up (lat, long) for full UK postcodes (e.g. "SW6 5PA"), NOT
+    outcodes -- postcodes.io has a real bulk endpoint for this one (unlike
+    /outcodes, verified with a live call before relying on it), so this is
+    batched POSTs rather than one request per postcode."""
+    session = requests.Session()
+    result: dict[str, tuple[float, float]] = {}
+
+    for i in range(0, len(postcodes), _POSTCODE_BATCH_SIZE):
+        batch = postcodes[i : i + _POSTCODE_BATCH_SIZE]
+        try:
+            resp = session.post(POSTCODES_IO_BULK_POSTCODES_URL, json={"postcodes": batch}, timeout=_TIMEOUT_SECONDS)
+        except requests.RequestException as e:
+            logger.error("postcodes.io bulk postcode batch %d-%d failed: %s", i, i + len(batch), e)
+            continue
+        if resp.status_code != 200:
+            logger.error("postcodes.io bulk postcode batch %d-%d failed: status=%d body=%s", i, i + len(batch), resp.status_code, resp.text[:300])
+            continue
+
+        for entry in resp.json().get("result", []):
+            data = entry.get("result")
+            if data is None:
+                logger.warning("postcodes.io has no data for postcode=%r", entry.get("query"))
+                continue
+            # Key by the query we sent (not postcodes.io's normalized
+            # `data["postcode"]`) so the caller can look results up by the
+            # exact postcode string it has on file, whitespace and all.
+            result[entry["query"]] = (data["latitude"], data["longitude"])
+
+        logger.info("postcodes.io: resolved %d/%d postcodes so far", len(result), i + len(batch))
 
     return result
 

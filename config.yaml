@@ -59,6 +59,15 @@ amenity_categories:
     label: "Airports"
     weight: 1
     query: "airport"
+  - key: private_schools
+    label: "Private Schools"
+    weight: 4
+    # Not a HERE search -- backed by a curated, pre-geocoded register
+    # (reference_data/private_schools_greater_london.csv, imported via
+    # `scripts/run_model.py import-private-schools`) scanned locally by
+    # LocalDatasetProvider. `query` selects which local dataset to scan.
+    provider: local_dataset
+    query: "private_schools"
 
 # Distance bins (miles) used to bucket each amenity result before applying
 # a radius weighting, same approach as v2's matching_engine_module.py.

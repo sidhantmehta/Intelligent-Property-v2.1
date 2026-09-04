@@ -157,3 +157,30 @@ class ApiUsage(Base):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     called_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class PrivateSchool(Base):
+    """A curated, pre-geocoded dataset entry (private schools register) --
+    NOT a per-outcode search result like Amenity. Each school has its own
+    fixed lat/long, geocoded once from its postcode; geo_model.providers.
+    local_dataset.LocalDatasetProvider scans this table to answer
+    nearby_amenities() the same way HERE's Discover does, so the rest of
+    the pipeline (scoring, caching) needs no special-casing for it."""
+
+    __tablename__ = "private_schools"
+    __table_args__ = (
+        UniqueConstraint("name", "postcode", name="uq_private_school_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    address: Mapped[str] = mapped_column(String(512), nullable=False)
+    postcode: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long: Mapped[float | None] = mapped_column(Float, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gender_profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    day_boarding_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    religious_affiliation: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    geocoded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

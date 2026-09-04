@@ -24,6 +24,7 @@ class AmenityCategory:
     label: str
     weight: float
     query: str
+    provider: str  # which GeoProvider (by name) answers nearby_amenities() for this category
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,13 @@ def load_model_config(path: Path | None = None, overrides: dict[str, Any] | None
         raw = _deep_merge(raw, overrides)
 
     categories = tuple(
-        AmenityCategory(key=c["key"], label=c["label"], weight=float(c["weight"]), query=c["query"])
+        AmenityCategory(
+            key=c["key"],
+            label=c["label"],
+            weight=float(c["weight"]),
+            query=c["query"],
+            provider=c.get("provider") or raw["provider"],  # falls back (None included) to the top-level provider
+        )
         for c in raw["amenity_categories"]
     )
     reference_points = tuple(

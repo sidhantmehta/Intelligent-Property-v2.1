@@ -3,6 +3,7 @@ requests>=2.31,<3
 SQLAlchemy>=2.0,<3
 PyYAML>=6.0,<7
 python-dotenv>=1.0,<2
+openpyxl>=3.1,<4  # only used by scripts/convert_private_schools_xlsx.py
 
 # dev / test only
 pytest>=8.0,<9

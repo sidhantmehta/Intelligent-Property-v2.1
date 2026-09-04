@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from typing import Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -31,6 +32,7 @@ from geo_model.data.models import (
     Amenity,
     ApiUsage,
     Outcode,
+    PrivateSchool,
     ReferencePoint as ReferencePointRow,
     RunConfig,
     RunResult,
@@ -41,17 +43,58 @@ from geo_model.domain import geo_cache, scoring
 from geo_model.logging_setup import get_logger, new_run_id, run_logger
 from geo_model.providers.base import GeoPoint, GeoProvider
 from geo_model.providers.here_maps import HereMapsProvider
+from geo_model.providers.local_dataset import LocalDatasetProvider
 
 logger = get_logger(__name__)
 
 
 def build_provider(config: ModelConfig) -> GeoProvider:
+    """Builds the PRIMARY provider (config.provider, e.g. "here") -- the
+    one used for reference-point geocoding and travel time, and the
+    default for any amenity category that doesn't name a different one.
+    Use _resolve_category_provider() for amenity fetching, which also
+    handles categories assigned to a different provider (e.g.
+    private_schools -> local_dataset)."""
     settings = load_settings()
     if config.provider == "here":
         if not settings.here_api_key:
             raise RuntimeError("HERE_API_KEY is not set (see .env.example) -- required for provider 'here'")
         return HereMapsProvider(api_key=settings.here_api_key)
     raise ValueError(f"Unknown provider: {config.provider!r}")
+
+
+def _build_local_dataset_provider(session: Session) -> LocalDatasetProvider:
+    schools = session.scalars(select(PrivateSchool).where(PrivateSchool.lat.is_not(None))).all()
+    datasets = {
+        "private_schools": [
+            {"title": s.name, "address": s.address, "lat": s.lat, "long": s.long}
+            for s in schools
+        ]
+    }
+    return LocalDatasetProvider(datasets)
+
+
+def _resolve_category_provider(
+    provider_name: str,
+    config: ModelConfig,
+    session: Session,
+    primary_provider: GeoProvider,
+    provider_cache: dict[str, GeoProvider],
+) -> GeoProvider:
+    """Amenity categories can each name their own provider (config.py
+    defaults it to the top-level one when unset). Providers are built at
+    most once per run and reused across every category/outcode that uses
+    them -- e.g. private_schools' LocalDatasetProvider only ever loads the
+    schools table once, not once per outcode."""
+    if provider_name in provider_cache:
+        return provider_cache[provider_name]
+    if provider_name == config.provider:
+        provider_cache[provider_name] = primary_provider
+    elif provider_name == "local_dataset":
+        provider_cache[provider_name] = _build_local_dataset_provider(session)
+    else:
+        raise ValueError(f"Unknown provider: {provider_name!r}")
+    return provider_cache[provider_name]
 
 
 def ensure_db_ready() -> None:
@@ -107,11 +150,12 @@ def _ensure_reference_points(session: Session, provider: GeoProvider, config: Mo
 
 def _fetch_and_upsert_amenities(
     session: Session,
-    provider: GeoProvider,
+    primary_provider: GeoProvider,
     config: ModelConfig,
     outcodes: list[Outcode],
     keys: list[geo_cache.CacheKey],
     log,
+    provider_cache: dict[str, GeoProvider],
 ) -> None:
     outcode_by_code = {o.outcode: o for o in outcodes}
     for i, key in enumerate(keys, start=1):
@@ -119,6 +163,7 @@ def _fetch_and_upsert_amenities(
         if outcode_row is None:
             continue
         category = config.category_by_key(key.category_key)
+        provider = _resolve_category_provider(category.provider, config, session, primary_provider, provider_cache)
         origin = GeoPoint(lat=outcode_row.lat, long=outcode_row.long)
 
         try:
@@ -212,30 +257,34 @@ def _fetch_and_upsert_travel_times(
     session.commit()
 
 
-def _persist_usage_log(session: Session, provider: GeoProvider, run_id: str, log) -> int:
-    """Copies everything the provider recorded during this run into the
-    api_usage table, so usage stays queryable/reconcilable against the
+def _persist_usage_log(session: Session, providers: Iterable[GeoProvider], run_id: str, log) -> int:
+    """Copies everything each provider recorded during this run into the
+    api_usage table, so usage stays queryable/reconcilable against each
     provider's own dashboard long after the run's log lines have rotated
     away. Safe to call even for providers that don't track usage (returns
-    an empty list by default -- see GeoProvider.get_usage_log)."""
-    records = provider.get_usage_log()
-    if not records:
-        return 0
-    session.execute(
-        ApiUsage.__table__.insert(),
-        [
-            {
-                "provider": provider.name,
-                "call_type": r.call_type,
-                "status_code": r.status_code,
-                "run_id": run_id,
-                "called_at": r.called_at,
-            }
-            for r in records
-        ],
-    )
-    log.info("Recorded %d %s API call(s) for usage tracking", len(records), provider.name)
-    return len(records)
+    an empty list by default -- see GeoProvider.get_usage_log), e.g.
+    LocalDatasetProvider, which has nothing to reconcile."""
+    total = 0
+    for provider in providers:
+        records = provider.get_usage_log()
+        if not records:
+            continue
+        session.execute(
+            ApiUsage.__table__.insert(),
+            [
+                {
+                    "provider": provider.name,
+                    "call_type": r.call_type,
+                    "status_code": r.status_code,
+                    "run_id": run_id,
+                    "called_at": r.called_at,
+                }
+                for r in records
+            ],
+        )
+        log.info("Recorded %d %s API call(s) for usage tracking", len(records), provider.name)
+        total += len(records)
+    return total
 
 
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:
@@ -252,6 +301,7 @@ def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = Non
     category_keys = [c.key for c in config.amenity_categories]
     with get_session() as session:
         provider = build_provider(config)
+        provider_cache: dict[str, GeoProvider] = {config.provider: provider}
         outcodes = _outcodes_in_scope(session, outcode_filter)
         log.info("Scope: %d outcodes x %d categories", len(outcodes), len(category_keys))
 
@@ -263,12 +313,12 @@ def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = Non
             dt.datetime.now(dt.timezone.utc), force=True,
         )
         log.info("%d/%d (outcode, category) pairs need refresh", len(keys), len(outcodes) * len(category_keys))
-        _fetch_and_upsert_amenities(session, provider, config, outcodes, keys, log)
+        _fetch_and_upsert_amenities(session, provider, config, outcodes, keys, log, provider_cache)
 
         travel_keys = [(o.outcode, rp.name) for o in outcodes for rp in config.reference_points]
         _fetch_and_upsert_travel_times(session, provider, config, outcodes, reference_points, travel_keys, log)
 
-        _persist_usage_log(session, provider, run_id, log)
+        _persist_usage_log(session, provider_cache.values(), run_id, log)
 
     elapsed = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()
     log.info("refresh_geo_data complete in %.1fs", elapsed)
@@ -289,6 +339,7 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
     category_keys = [c.key for c in config.amenity_categories]
     with get_session() as session:
         provider = build_provider(config)
+        provider_cache: dict[str, GeoProvider] = {config.provider: provider}
         outcodes = _outcodes_in_scope(session, outcode_filter)
         if not outcodes:
             log.error("No outcodes in scope -- has the outcodes table been seeded? (see geo_model.postcodes)")
@@ -300,7 +351,7 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
         cached = _cached_fetch_times(session, category_keys)
         missing_keys = geo_cache.keys_missing_only([o.outcode for o in outcodes], category_keys, cached)
         log.info("%d/%d (outcode, category) pairs are missing from cache and will be fetched now", len(missing_keys), len(outcodes) * len(category_keys))
-        _fetch_and_upsert_amenities(session, provider, config, outcodes, missing_keys, log)
+        _fetch_and_upsert_amenities(session, provider, config, outcodes, missing_keys, log, provider_cache)
 
         existing_travel = {
             (tt.outcode, tt.reference_point_name)
@@ -372,7 +423,7 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
                     )
                 )
 
-        _persist_usage_log(session, provider, run_id, log)
+        _persist_usage_log(session, provider_cache.values(), run_id, log)
         session.commit()
 
     elapsed = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()

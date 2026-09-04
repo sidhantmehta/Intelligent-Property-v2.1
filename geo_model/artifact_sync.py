@@ -23,7 +23,7 @@ from geo_model.data.models import Outcode, RunConfig, RunResult
 def config_to_artifact_doc(config: ModelConfig) -> dict:
     return {
         "amenity_categories": [
-            {"key": c.key, "label": c.label, "weight": c.weight, "query": c.query}
+            {"key": c.key, "label": c.label, "weight": c.weight, "query": c.query, "provider": c.provider}
             for c in config.amenity_categories
         ],
         "reference_points": [
@@ -37,8 +37,11 @@ def artifact_doc_to_overrides(doc: dict) -> dict:
     """Inverse of config_to_artifact_doc, shaped for
     geo_model.config.load_model_config(overrides=...). The settings form
     only lets a viewer edit weights/names/addresses, not each category's
-    provider query -- so a query missing from the doc (an older save, or a
-    category the viewer never touched) falls back to config.yaml's."""
+    provider or query -- so those missing from the doc (an older save, or
+    a category the viewer never touched) fall back to config.yaml's. This
+    matters beyond cosmetics: a category whose `provider` silently reset
+    to the default on save (e.g. private_schools losing its
+    local_dataset assignment) would start hitting HERE instead."""
     overrides: dict = {}
     if "amenity_categories" in doc:
         defaults = {c["key"]: c for c in config_to_artifact_doc(load_model_config())["amenity_categories"]}
@@ -48,6 +51,7 @@ def artifact_doc_to_overrides(doc: dict) -> dict:
                 "label": c.get("label", defaults.get(c["key"], {}).get("label", c["key"])),
                 "weight": c["weight"],
                 "query": c.get("query", defaults.get(c["key"], {}).get("query", c["key"])),
+                "provider": c.get("provider", defaults.get(c["key"], {}).get("provider")),
             }
             for c in doc["amenity_categories"]
         ]
