@@ -1133,14 +1133,38 @@
   // one-shot get() -- the same call shape the "Run the model" push uses
   // to write these docs -- is fetched once at load and re-fetched whenever
   // results/latest's run_id changes, which avoids depending on that bridge.
-  function loadOutcodes(db) {
-    db.collection("results/latest/outcodes").limit(1000).get().then(function (snap) {
-      state.outcodes = outcodesFromSnapshot(snap);
-      state.outcodesError = null;
+  // If rendering the freshly-loaded outcomes throws (a bad value in one
+  // doc, a DOM element missing, ...), surface the real error on-page
+  // instead of leaving the map/table frozen on their stale "no results"
+  // placeholder while the status pill has already moved on -- that
+  // combination is otherwise indistinguishable from the fetch itself
+  // silently returning nothing.
+  function renderOutcodesOrShowError() {
+    try {
       recomputeScores();
       renderStatus();
       renderMap();
       renderTable();
+    } catch (e) {
+      console.error("outcomes render error", e);
+      state.outcodesError = "render error: " + (e && e.message ? e.message : String(e));
+      try { renderStatus(); } catch (e2) { console.error(e2); }
+      try {
+        var svg = document.getElementById("mapSvg");
+        if (svg) svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' + escapeHtml(state.outcodesError) + '</text>';
+      } catch (e3) { console.error(e3); }
+      try {
+        var body = document.getElementById("tableBody");
+        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + 2) + '" style="color:var(--muted)">' + escapeHtml(state.outcodesError) + '</td></tr>';
+      } catch (e4) { console.error(e4); }
+    }
+  }
+
+  function loadOutcodes(db) {
+    db.collection("results/latest/outcodes").limit(1000).get().then(function (snap) {
+      state.outcodes = outcodesFromSnapshot(snap);
+      state.outcodesError = null;
+      renderOutcodesOrShowError();
     }, function (err) {
       console.error("results outcodes fetch error", err);
       state.outcodesError = (err && err.code) ? (err.code + (err.message ? ": " + err.message : "")) : "load failed";
