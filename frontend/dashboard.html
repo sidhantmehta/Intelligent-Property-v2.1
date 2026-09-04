@@ -257,6 +257,10 @@
       </div>
 
       <div class="card">
+        <div class="hint" style="margin-top:0;">Scores already recalculate as you type above — this button is only here as a manual nudge (e.g. if a field lost focus without firing). It doesn't touch the database.</div>
+        <div class="btn-row">
+          <button class="btn" id="recalcBtn" type="button">Recalculate scores</button>
+        </div>
         <div class="btn-row" style="margin-top:0;">
           <button class="btn primary" id="saveBtn" type="button">Save settings</button>
           <button class="btn" id="resetBtn" type="button">Reset to defaults</button>
@@ -332,7 +336,8 @@
     pageSize: 50,
     currentPage: 1,
     drillOutcode: null,
-    drillCategory: null
+    drillCategory: null,
+    amenitiesCache: {}
   };
 
   var FILTER_OPS = [
@@ -920,6 +925,24 @@
     });
   }
 
+  // Amenity drill-down detail lives in its own results/latest/amenities
+  // collection (not embedded in the outcodes doc -- see artifact_sync.py),
+  // so it's fetched on demand here rather than always being loaded. Cache
+  // values: undefined = not yet requested, "loading", "error", or the
+  // {category_key: [{n,d,s}, ...]} amenities object once loaded.
+  function fetchAmenities(outcode) {
+    if (state.amenitiesCache[outcode] !== undefined) return;
+    if (!state.db) { state.amenitiesCache[outcode] = "error"; return; }
+    state.amenitiesCache[outcode] = "loading";
+    state.db.doc("results/latest/amenities/" + outcode).get().then(function (snap) {
+      state.amenitiesCache[outcode] = (snap.exists && snap.data().amenities) || {};
+      renderTable();
+    }, function () {
+      state.amenitiesCache[outcode] = "error";
+      renderTable();
+    });
+  }
+
   function toggleDrilldown(outcode, categoryKey) {
     if (state.drillOutcode === outcode && state.drillCategory === categoryKey) {
       state.drillOutcode = null;
@@ -927,6 +950,8 @@
     } else {
       state.drillOutcode = outcode;
       state.drillCategory = categoryKey;
+      var col = columns().find(function (c) { return c.key === categoryKey; });
+      if (col && !col.isTravel) fetchAmenities(outcode);
     }
   }
 
@@ -965,7 +990,26 @@
       info.textContent = "Travel time to " + c.label + (refPoint ? " (" + refPoint.address + ")" : "") + ": " + mins;
       panel.appendChild(info);
     } else {
-      var list = (o.amenities && o.amenities[c.key]) || [];
+      var cached = state.amenitiesCache[o.outcode];
+      if (cached === "loading" || cached === undefined) {
+        var loading = document.createElement("div");
+        loading.className = "drill-empty";
+        loading.textContent = "Loading nearby " + c.label.toLowerCase() + "…";
+        panel.appendChild(loading);
+        td.appendChild(panel);
+        tr.appendChild(td);
+        return tr;
+      }
+      if (cached === "error") {
+        var errEl = document.createElement("div");
+        errEl.className = "drill-empty";
+        errEl.textContent = "Couldn't load drill-down detail (no database access, or the fetch failed).";
+        panel.appendChild(errEl);
+        td.appendChild(panel);
+        tr.appendChild(td);
+        return tr;
+      }
+      var list = (cached && cached[c.key]) || [];
       if (!list.length) {
         var empty = document.createElement("div");
         empty.className = "drill-empty";
@@ -1097,6 +1141,15 @@
   }
 
   function wireButtons() {
+    document.getElementById("recalcBtn").addEventListener("click", function () {
+      state.config = readFormIntoConfig();
+      recomputeScores();
+      renderTable();
+      renderMap();
+      var status = document.getElementById("saveStatus");
+      status.textContent = "Recalculated " + new Date().toLocaleTimeString() + " (not saved).";
+    });
+
     document.getElementById("saveBtn").addEventListener("click", function () {
       var status = document.getElementById("saveStatus");
       if (!state.db) { status.textContent = "Can't save: this view has no database access."; return; }

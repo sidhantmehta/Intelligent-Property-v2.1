@@ -81,13 +81,30 @@ def export_config_doc(path: Path) -> dict:
 
 
 def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_example: bool = False) -> dict:
-    """Writes ``out_dir/latest.json`` (the results/latest metadata doc) and
+    """Writes ``out_dir/latest.json`` (the results/latest metadata doc),
     one ``out_dir/outcodes/<outcode>.json`` per outcode (each a
-    results/latest/outcodes/<outcode> doc) for the given run (defaulting to
-    the most recent one in the DB)."""
+    results/latest/outcodes/<outcode> doc), and one
+    ``out_dir/amenities/<outcode>.json`` per outcode (each a
+    results/latest/amenities/<outcode> doc) for the given run (defaulting
+    to the most recent one in the DB).
+
+    The amenities drill-down detail is kept in its OWN collection, fetched
+    lazily by the frontend only when a viewer expands a cell, rather than
+    embedded in the outcodes doc. Embedding it there once made every
+    outcodes doc ~10x bigger (~1KB -> ~11KB); multiplied across ~700
+    outcodes that pushed the ALWAYS-subscribed results/latest/outcodes
+    collection's total realtime payload well past what a single
+    onSnapshot listener reliably delivers (confirmed: a plain `list` read
+    against that collection silently truncated at ~400 of 681 docs despite
+    asking for 1000), which is what made the dashboard's table and map go
+    blank. Keeping outcodes docs lean (score + per-category raw/normalized
+    numbers only, no amenity names/distances) is what makes the realtime
+    subscription work reliably again."""
     out_dir.mkdir(parents=True, exist_ok=True)
     outcodes_dir = out_dir / "outcodes"
     outcodes_dir.mkdir(parents=True, exist_ok=True)
+    amenities_dir = out_dir / "amenities"
+    amenities_dir.mkdir(parents=True, exist_ok=True)
 
     with get_session() as session:
         if run_id is None:
@@ -153,10 +170,12 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "long": o.long,
                 "total_score": r.total_score,
                 "categories": categories,
-                "amenities": amenities_by_outcode.get(r.outcode, {}),
             }
             (outcodes_dir / f"{r.outcode}.json").write_text(json.dumps(doc))
             outcode_docs.append(doc)
+
+            amenities_doc = {"outcode": r.outcode, "amenities": amenities_by_outcode.get(r.outcode, {})}
+            (amenities_dir / f"{r.outcode}.json").write_text(json.dumps(amenities_doc))
 
         meta = {
             "run_id": run_config.id,
@@ -166,4 +185,9 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
         }
         (out_dir / "latest.json").write_text(json.dumps(meta, indent=2))
 
-    return {"meta": meta, "outcode_count": len(outcode_docs), "outcodes_dir": str(outcodes_dir)}
+    return {
+        "meta": meta,
+        "outcode_count": len(outcode_docs),
+        "outcodes_dir": str(outcodes_dir),
+        "amenities_dir": str(amenities_dir),
+    }
