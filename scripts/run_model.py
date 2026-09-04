@@ -46,6 +46,7 @@ from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
 from geo_model.grammar_schools import import_grammar_schools  # noqa: E402
 from geo_model.postcodes import backfill_outcode_areas, compute_sector_centroids, seed_outcodes_table  # noqa: E402
+from geo_model.epc_data import download_full_load_csv, ingest_epc_data  # noqa: E402
 from geo_model.price_data import ingest_hpi_index, ingest_price_paid_data  # noqa: E402
 from geo_model.private_schools import import_private_schools  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
@@ -108,6 +109,27 @@ def cmd_compute_sector_centroids(args: argparse.Namespace) -> None:
 def cmd_compute_sector_prices(args: argparse.Namespace) -> None:
     scope = _read_scope(args.outcodes_file, args.all)
     result = pipeline.compute_sector_prices(outcode_filter=scope)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_ingest_epc_data(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    scope = _read_scope(args.outcodes_file, args.all)
+    if scope is None:
+        raise SystemExit("ingest-epc-data requires a bounded outcode scope (default is fine) -- --all would try to pull all of England & Wales")
+    outcodes = set(scope)
+    zip_path = args.zip_path
+    if zip_path is None:
+        zip_path = REPO_ROOT / "epc-domestic-full-load.zip"
+        download_full_load_csv(zip_path)
+    with get_session() as session:
+        result = ingest_epc_data(session, outcodes, zip_path)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_compute_sector_floor_area(args: argparse.Namespace) -> None:
+    scope = _read_scope(args.outcodes_file, args.all)
+    result = pipeline.compute_sector_floor_area(outcode_filter=scope)
     print(json.dumps(result, indent=2))
 
 
@@ -225,6 +247,17 @@ def main() -> None:
     p.add_argument("--all", action="store_true", help="Refuse -- ingest-price-data always needs a bounded scope, see --outcodes-file")
     p.add_argument("--years", type=int, nargs="+", default=[2021, 2022, 2023, 2024, 2025, 2026], help="Which pp-<year>.csv files to pull")
     p.set_defaults(func=cmd_ingest_price_data)
+
+    p = sub.add_parser("ingest-epc-data", help="Fetch the EPC domestic full-load CSV (needs EPC_API_KEY) and extract floor area, filtered to our outcode scope")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Refuse -- ingest-epc-data always needs a bounded scope, see --outcodes-file")
+    p.add_argument("--zip-path", type=Path, default=None, help="Path to an already-downloaded domestic-csv.zip, to skip re-downloading the ~8GB file")
+    p.set_defaults(func=cmd_ingest_epc_data)
+
+    p = sub.add_parser("compute-sector-floor-area", help="Aggregate epc_certificates into sector_floor_areas (median m^2 per sector x property type)")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Scope to every outcode with ingested certificates")
+    p.set_defaults(func=cmd_compute_sector_floor_area)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),

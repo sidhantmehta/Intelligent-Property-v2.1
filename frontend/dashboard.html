@@ -257,7 +257,7 @@
 
       <div class="card">
         <h2>Scores by postcode sector</h2>
-        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below; a "*" means the sector had too few sales and the outcode-level estimate was used instead.</div>
+        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below; £/m² divides that by the median EPC floor area for the same type. A "*" means the sector had too few sales (or too few EPCs on file) and the outcode-level estimate was used instead.</div>
         <div class="btn-row" id="presetBar" style="margin-top:10px;">
           <button class="btn" id="presetHomeCounties" type="button">Preset: &lt;60 min to Zig Zag + Home Counties</button>
           <button class="btn" id="presetGrammar" type="button">Preset: &lt;60 min to Zig Zag + grammar score &gt;1</button>
@@ -416,6 +416,7 @@
     { key: "borough", label: "Borough" },
     { key: "geo_group", label: "Group" },
     { key: "price", label: "Price" },
+    { key: "price_per_sqm", label: "£/m²" },
     { key: "total_score", label: "Total" }
   ];
 
@@ -426,10 +427,24 @@
     return (p && p.median_price != null) ? p.median_price : null;
   }
 
+  // price_per_sqm comes from a separate EPC-derived source (floor area)
+  // than median_price (Land Registry) -- see artifact_sync.py -- so it
+  // can be missing (or backed off to the outcode) independently of price,
+  // even for the same property type in the same sector.
+  function pricePerSqmValue(o) {
+    var p = o.prices && o.prices[state.propertyType];
+    return (p && p.price_per_sqm != null) ? p.price_per_sqm : null;
+  }
+
   function formatPrice(n) {
     if (n == null) return "–";
     if (n >= 1000000) return "£" + (n / 1000000).toFixed(2) + "M";
     return "£" + Math.round(n / 1000) + "k";
+  }
+
+  function formatPricePerSqm(n) {
+    if (n == null) return "–";
+    return "£" + Math.round(n).toLocaleString();
   }
 
   function columns() {
@@ -939,6 +954,10 @@
         av = priceValue(a); bv = priceValue(b);
         av = av == null ? -1 : av; bv = bv == null ? -1 : bv;
       }
+      else if (key === "price_per_sqm") {
+        av = pricePerSqmValue(a); bv = pricePerSqmValue(b);
+        av = av == null ? -1 : av; bv = bv == null ? -1 : bv;
+      }
       else {
         av = (a.categories[key] || {}).normalized_score;
         bv = (b.categories[key] || {}).normalized_score;
@@ -1236,6 +1255,20 @@
         tdPrice.title = "No price data for this property type.";
       }
       tr.appendChild(tdPrice);
+
+      var tdSqm = document.createElement("td");
+      tdSqm.className = "price";
+      if (priceInfo && priceInfo.price_per_sqm != null) {
+        tdSqm.textContent = formatPricePerSqm(priceInfo.price_per_sqm) + (priceInfo.floor_area_grain === "outcode" ? " *" : "");
+        tdSqm.title = (priceInfo.floor_area_grain === "outcode"
+          ? "Sector had too few EPCs on file — backed off to the outcode-level median floor area. "
+          : "") + "Median floor area " + Math.round(priceInfo.median_floor_area_m2) + " m² from "
+          + priceInfo.floor_area_certificate_count + " EPC certificate(s).";
+      } else {
+        tdSqm.textContent = "–";
+        tdSqm.title = "No EPC floor-area data for this property type.";
+      }
+      tr.appendChild(tdSqm);
 
       var tdScore = document.createElement("td");
       tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);

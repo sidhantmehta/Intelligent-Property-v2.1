@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from geo_model.config import ModelConfig, load_model_config
 from geo_model.data.db import get_session
-from geo_model.data.models import Amenity, Outcode, PostcodeSector, RunConfig, RunResult, SectorPrice
+from geo_model.data.models import Amenity, Outcode, PostcodeSector, RunConfig, RunResult, SectorFloorArea, SectorPrice
 from geo_model.domain import scoring
 
 # How many of the nearest amenities to embed per outcode/category in the
@@ -179,6 +179,23 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "grain": p.estimate_grain,
             }
 
+        # Floor area comes from a wholly separate source (EPC certificates,
+        # not Land Registry) and can legitimately be missing/backed-off
+        # independently of price -- e.g. a sector with plenty of sales but
+        # few EPCs on file. price_per_sqm is derived here (not stored) from
+        # whichever grain each side resolved to; it's still a genuine
+        # sector+type-level ratio, just not from paired individual sales.
+        floor_area_rows = list(
+            session.scalars(select(SectorFloorArea).where(SectorFloorArea.sector.in_(sectors_in_scope)))
+        )
+        floor_area_by_sector: dict[str, dict[str, dict]] = {}
+        for f in floor_area_rows:
+            floor_area_by_sector.setdefault(f.sector, {})[f.property_type] = {
+                "median_floor_area_m2": f.median_floor_area_m2,
+                "certificate_count": f.certificate_count,
+                "grain": f.estimate_grain,
+            }
+
         sector_docs = []
         for r in results:
             o = outcode_rows.get(r.outcode)
@@ -193,6 +210,15 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 }
                 for c in r.categories
             }
+            prices = {k: dict(v) for k, v in prices_by_sector.get(r.sector, {}).items()}
+            floor_areas = floor_area_by_sector.get(r.sector, {})
+            for ptype, fa in floor_areas.items():
+                entry = prices.setdefault(ptype, {})
+                entry["median_floor_area_m2"] = fa["median_floor_area_m2"]
+                entry["floor_area_certificate_count"] = fa["certificate_count"]
+                entry["floor_area_grain"] = fa["grain"]
+                if entry.get("median_price") and fa["median_floor_area_m2"]:
+                    entry["price_per_sqm"] = entry["median_price"] / fa["median_floor_area_m2"]
             doc = {
                 "sector": r.sector,
                 "outcode": r.outcode,
@@ -202,7 +228,7 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "categories": categories,
                 "borough": o.borough,
                 "geo_group": o.geo_group,
-                "prices": prices_by_sector.get(r.sector, {}),
+                "prices": prices,
             }
             (sectors_dir / f"{sector_doc_id(r.sector)}.json").write_text(json.dumps(doc))
             sector_docs.append(doc)

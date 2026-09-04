@@ -31,6 +31,7 @@ from geo_model.data.db import get_session, init_db
 from geo_model.data.models import (
     Amenity,
     ApiUsage,
+    EpcCertificate,
     GrammarSchool,
     HpiIndex,
     Outcode,
@@ -41,11 +42,12 @@ from geo_model.data.models import (
     RunConfig,
     RunResult,
     RunResultCategory,
+    SectorFloorArea,
     SectorPrice,
     SectorTravelTime,
     TravelTime,
 )
-from geo_model.domain import geo_cache, pricing, scoring
+from geo_model.domain import floor_area, geo_cache, pricing, scoring
 from geo_model.logging_setup import get_logger, new_run_id, run_logger
 from geo_model.providers.base import GeoPoint, GeoProvider
 from geo_model.providers.here_maps import HereMapsProvider
@@ -416,6 +418,59 @@ def compute_sector_prices(outcode_filter: list[str] | None = None) -> dict:
         by_grain[e.grain] = by_grain.get(e.grain, 0) + 1
     log.info("compute_sector_prices complete: %d (sector, type) estimates, by grain: %s", len(estimates), by_grain)
     return {"run_id": run_id, "estimates": len(estimates), "by_grain": by_grain, "as_of_month": latest_month.isoformat()}
+
+
+def compute_sector_floor_area(outcode_filter: list[str] | None = None) -> dict:
+    """Wires geo_model.domain.floor_area to the DB: loads EpcCertificate
+    rows, computes a median floor area per (sector, property_type) with
+    the outcode-level fallback for sparse cells, and upserts
+    sector_floor_areas. A maintenance step like compute_sector_prices --
+    only needs recomputing when new EPC data has been ingested."""
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+
+    with get_session() as session:
+        query = select(EpcCertificate)
+        if outcode_filter:
+            query = query.where(EpcCertificate.outcode.in_(outcode_filter))
+        cert_rows = session.scalars(query).all()
+        records = [
+            floor_area.FloorAreaRecord(
+                outcode=c.outcode, sector=c.sector, property_type=c.property_type,
+                total_floor_area_m2=c.total_floor_area_m2,
+            )
+            for c in cert_rows
+        ]
+        log.info("Loaded %d EPC certificates", len(records))
+
+        estimates = floor_area.estimate_sector_floor_areas(records)
+
+        for e in estimates:
+            if e.grain == "none":
+                continue
+            stmt = sqlite_insert(SectorFloorArea).values(
+                sector=e.key, property_type=e.property_type, median_floor_area_m2=e.median_floor_area_m2,
+                certificate_count=e.certificate_count, estimate_grain=e.grain,
+                computed_at=dt.datetime.now(dt.timezone.utc),
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["sector", "property_type"],
+                set_={
+                    "median_floor_area_m2": stmt.excluded.median_floor_area_m2,
+                    "certificate_count": stmt.excluded.certificate_count,
+                    "estimate_grain": stmt.excluded.estimate_grain,
+                    "computed_at": stmt.excluded.computed_at,
+                },
+            )
+            session.execute(stmt)
+        session.commit()
+
+    by_grain: dict[str, int] = {}
+    for e in estimates:
+        by_grain[e.grain] = by_grain.get(e.grain, 0) + 1
+    log.info("compute_sector_floor_area complete: %d (sector, type) estimates, by grain: %s", len(estimates), by_grain)
+    return {"run_id": run_id, "estimates": len(estimates), "by_grain": by_grain}
 
 
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:
