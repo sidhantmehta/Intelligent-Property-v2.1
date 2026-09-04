@@ -260,6 +260,7 @@
         <div class="hint" style="margin-top:0;">Scores already recalculate as you type above — this button is only here as a manual nudge (e.g. if a field lost focus without firing). It doesn't touch the database.</div>
         <div class="btn-row">
           <button class="btn" id="recalcBtn" type="button">Recalculate scores</button>
+          <button class="btn" id="reloadResultsBtn" type="button">Reload results</button>
         </div>
         <div class="btn-row" style="margin-top:0;">
           <button class="btn primary" id="saveBtn" type="button">Save settings</button>
@@ -337,7 +338,8 @@
     currentPage: 1,
     drillOutcode: null,
     drillCategory: null,
-    amenitiesCache: {}
+    amenitiesCache: {},
+    outcodesError: null
   };
 
   var FILTER_OPS = [
@@ -511,8 +513,12 @@
     }
     var when = state.resultsMeta.created_at ? new Date(state.resultsMeta.created_at) : null;
     var whenStr = when ? when.toLocaleString() : "unknown time";
-    text.textContent = (state.outcodes.length) + " outcodes · " + whenStr;
-    pill.classList.toggle("example", !!state.resultsMeta.is_example);
+    if (state.outcodesError) {
+      text.textContent = "Couldn't load outcodes (" + state.outcodesError + ")";
+    } else {
+      text.textContent = (state.outcodes.length) + " outcodes · " + whenStr;
+    }
+    pill.classList.toggle("example", !!state.resultsMeta.is_example || !!state.outcodesError);
     banner.hidden = !state.resultsMeta.is_example;
   }
 
@@ -522,7 +528,8 @@
     var W = 640, H = 520, PAD = 24;
     svg.innerHTML = "";
     if (!state.outcodes.length) {
-      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">No results to plot yet</text>';
+      var emptyMsg = state.outcodesError ? ("Couldn't load results: " + state.outcodesError) : "No results to plot yet";
+      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' + escapeHtml(emptyMsg) + '</text>';
       return;
     }
     var lats = state.outcodes.map(function (o) { return o.lat; });
@@ -852,7 +859,7 @@
       var tr = document.createElement("tr");
       var td = document.createElement("td");
       td.colSpan = cols.length + 2;
-      td.textContent = "No results yet.";
+      td.textContent = state.outcodesError ? ("Couldn't load results: " + state.outcodesError) : "No results yet.";
       td.style.color = "var(--muted)";
       tr.appendChild(td);
       body.appendChild(tr);
@@ -1115,6 +1122,34 @@
     return snap.docs.map(function (d) { return d.data(); }).filter(Boolean);
   }
 
+  // The outcomes collection (hundreds of documents) only ever changes when
+  // Claude pushes a fresh model run -- it isn't collaboratively edited like
+  // config, so it doesn't need a permanent realtime listener. A live
+  // onSnapshot() on a collection this size was found to silently never
+  // deliver a snapshot on the real artifact runtime (the doc-level db.d.ts
+  // notes onSnapshot can die with "unavailable" if the realtime bridge
+  // never reaches the store for a subscribe -- plausible for a payload
+  // this size even well under the documented per-document limits). A
+  // one-shot get() -- the same call shape the "Run the model" push uses
+  // to write these docs -- is fetched once at load and re-fetched whenever
+  // results/latest's run_id changes, which avoids depending on that bridge.
+  function loadOutcodes(db) {
+    db.collection("results/latest/outcodes").limit(1000).get().then(function (snap) {
+      state.outcodes = outcodesFromSnapshot(snap);
+      state.outcodesError = null;
+      recomputeScores();
+      renderStatus();
+      renderMap();
+      renderTable();
+    }, function (err) {
+      console.error("results outcodes fetch error", err);
+      state.outcodesError = (err && err.code) ? (err.code + (err.message ? ": " + err.message : "")) : "load failed";
+      renderStatus();
+      renderMap();
+      renderTable();
+    });
+  }
+
   function subscribeDb(db) {
     db.doc("config/current").onSnapshot(function (snap) {
       state.config = snap.exists ? snap.data() : DEFAULT_CONFIG;
@@ -1126,18 +1161,18 @@
       renderMap();
     }, function (err) { console.error("config snapshot error", err); });
 
+    var outcodesLoaded = false;
+    var lastRunId;
     db.doc("results/latest").onSnapshot(function (snap) {
       state.resultsMeta = snap.exists ? snap.data() : null;
       renderStatus();
+      var runId = state.resultsMeta && state.resultsMeta.run_id;
+      if (!outcodesLoaded || runId !== lastRunId) {
+        outcodesLoaded = true;
+        lastRunId = runId;
+        loadOutcodes(db);
+      }
     }, function (err) { console.error("results meta snapshot error", err); });
-
-    db.collection("results/latest/outcodes").limit(1000).onSnapshot(function (snap) {
-      state.outcodes = outcodesFromSnapshot(snap);
-      recomputeScores();
-      renderStatus();
-      renderMap();
-      renderTable();
-    }, function (err) { console.error("results outcodes snapshot error", err); });
   }
 
   function wireButtons() {
@@ -1148,6 +1183,14 @@
       renderMap();
       var status = document.getElementById("saveStatus");
       status.textContent = "Recalculated " + new Date().toLocaleTimeString() + " (not saved).";
+    });
+
+    document.getElementById("reloadResultsBtn").addEventListener("click", function () {
+      var status = document.getElementById("saveStatus");
+      if (!state.db) { status.textContent = "Can't reload: this view has no database access."; return; }
+      status.textContent = "Reloading results…";
+      loadOutcodes(state.db);
+      status.textContent = "Reload requested " + new Date().toLocaleTimeString() + ".";
     });
 
     document.getElementById("saveBtn").addEventListener("click", function () {
