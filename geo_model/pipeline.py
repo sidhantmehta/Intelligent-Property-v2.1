@@ -31,6 +31,7 @@ from geo_model.data.db import get_session, init_db
 from geo_model.data.models import (
     Amenity,
     ApiUsage,
+    GrammarSchool,
     Outcode,
     PrivateSchool,
     ReferencePoint as ReferencePointRow,
@@ -64,12 +65,17 @@ def build_provider(config: ModelConfig) -> GeoProvider:
 
 
 def _build_local_dataset_provider(session: Session) -> LocalDatasetProvider:
-    schools = session.scalars(select(PrivateSchool).where(PrivateSchool.lat.is_not(None))).all()
+    private_schools = session.scalars(select(PrivateSchool).where(PrivateSchool.lat.is_not(None))).all()
+    grammar_schools = session.scalars(select(GrammarSchool).where(GrammarSchool.lat.is_not(None))).all()
     datasets = {
         "private_schools": [
             {"title": s.name, "address": s.address, "lat": s.lat, "long": s.long}
-            for s in schools
-        ]
+            for s in private_schools
+        ],
+        "grammar_schools": [
+            {"title": s.name, "address": s.address, "lat": s.lat, "long": s.long}
+            for s in grammar_schools
+        ],
     }
     return LocalDatasetProvider(datasets)
 

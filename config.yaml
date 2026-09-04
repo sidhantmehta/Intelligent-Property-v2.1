@@ -68,6 +68,14 @@ amenity_categories:
     # LocalDatasetProvider. `query` selects which local dataset to scan.
     provider: local_dataset
     query: "private_schools"
+  - key: grammar_schools
+    label: "Grammar Schools"
+    weight: 4
+    # Same local-dataset pattern as private_schools, backed by
+    # reference_data/grammar_schools_london_home_counties.csv (imported via
+    # `scripts/run_model.py import-grammar-schools`).
+    provider: local_dataset
+    query: "grammar_schools"
 
 # Distance bins (miles) used to bucket each amenity result before applying
 # a radius weighting, same approach as v2's matching_engine_module.py.

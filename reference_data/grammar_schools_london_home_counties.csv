@@ -1,0 +1,94 @@
+region,name,address,postcode,intake_type
+Barnet & Enfield,Henrietta Barnett School,"Central Square, Hampstead Garden Suburb, London, NW11 7BN",NW11 7BN,Girls
+Barnet & Enfield,Queen Elizabeth's School (QE Boys),"Queens Road, Barnet, EN5 4EE",EN5 4EE,Boys
+Barnet & Enfield,St. Michael's Catholic Grammar School,"Nether Street, North Finchley, London, N12 7NJ",N12 7NJ,Girls
+Barnet & Enfield,The Latymer School,"Haselbury Road, Edmonton, London, N9 9TN",N9 9TN,Mixed
+Berkshire,Herschel Grammar School,"Northampton Avenue, Slough, SL1 3BW",SL1 3BW,Mixed
+Berkshire,Kendrick School,"London Road, Reading, RG1 5BN",RG1 5BN,Girls
+Berkshire,Langley Grammar School,"Reddington Drive, Slough, SL3 7QS",SL3 7QS,Mixed
+Berkshire,Reading School,"Erleigh Road, Reading, RG1 5LW",RG1 5LW,Boys
+Berkshire,St Bernard's Catholic Grammar School,"Langley Road, Slough, SL3 7AF",SL3 7AF,Mixed
+Berkshire,Upton Court Grammar School,"Lascelles Road, Slough, SL3 7PR",SL3 7PR,Mixed
+Bexley,Beths Grammar School,"Hartford Road, Bexley, DA5 1NE",DA5 1NE,Boys
+Bexley,Bexley Grammar School,"Danson Lane, Welling, DA16 2BL",DA16 2BL,Mixed
+Bexley,Chislehurst and Sidcup Grammar School,"Hurst Road, Sidcup, DA15 9AG",DA15 9AG,Mixed
+Bexley,Townley Grammar School,"Townley Road, Bexleyheath, DA6 7AB",DA6 7AB,Girls
+Bromley,Newstead Wood School,"Avebury Road, Orpington, BR6 9SA",BR6 9SA,Girls
+Bromley,St Olave's & St Saviour's Grammar School,"Goddington Lane, Orpington, BR6 9SH",BR6 9SH,Boys
+Buckinghamshire,Aylesbury Grammar School,"Walton Road, Aylesbury, HP21 7RP",HP21 7RP,Boys
+Buckinghamshire,Aylesbury High School,"Walton Road, Aylesbury, HP21 7SX",HP21 7SX,Girls
+Buckinghamshire,Beaconsfield High School,"Wattleton Road, Beaconsfield, HP9 1RR",HP9 1RR,Girls
+Buckinghamshire,Burnham Grammar School,"Hogfair Lane, Burnham, SL1 7HQ",SL1 7HQ,Mixed
+Buckinghamshire,Chesham Grammar School,"White Hill, Chesham, HP5 1RL",HP5 1RL,Mixed
+Buckinghamshire,Dr Challoner's Grammar School,"Chesham Road, Amersham, HP6 5HA",HP6 5HA,Boys
+Buckinghamshire,Dr Challoner's High School,"Cokes Lane, Little Chalfont, HP7 9QB",HP7 9QB,Girls
+Buckinghamshire,John Hampden Grammar School,"Marlow Hill, High Wycombe, HP13 7LN",HP13 7LN,Boys
+Buckinghamshire,Royal Grammar School,"Amersham Road, High Wycombe, HP13 6QT",HP13 6QT,Boys
+Buckinghamshire,Royal Latin School,"Chandos Road, Buckingham, MK18 1RG",MK18 1RG,Mixed
+Buckinghamshire,Sir Henry Floyd Grammar School,"Oxford Road, Aylesbury, HP21 8PE",HP21 8PE,Mixed
+Buckinghamshire,Sir William Borlase's Grammar School,"West Street, Marlow, SL7 1RL",SL7 1RL,Mixed
+Buckinghamshire,Wycombe High School,"Marlow Road, High Wycombe, HP11 1TB",HP11 1TB,Girls
+Essex & Southend,Chelmsford County High School for Girls,"Broomfield Road, Chelmsford, CM2 6LR",CM2 6LR,Girls
+Essex & Southend,Colchester County High School for Girls,"Norman Way, Colchester, CO3 3US",CO3 3US,Girls
+Essex & Southend,Colchester Royal Grammar School,"Lexden Road, Colchester, CO3 3HD",CO3 3HD,Boys
+Essex & Southend,King Edward VI Grammar School,"Broomfield Road, Chelmsford, CM1 1LX",CM1 1LX,Boys
+Essex & Southend,Shoeburyness High School,"Caulfield Road, Shoeburyness, Southend-on-Sea, SS3 9QP",SS3 9QP,Mixed (Selective Stream)
+Essex & Southend,Southend High School for Boys,"Prittlewell Chase, Southend-on-Sea, SS1 2TQ",SS1 2TQ,Boys
+Essex & Southend,Southend High School for Girls,"Southchurch Boulevard, Southend-on-Sea, SS2 4UZ",SS2 4UZ,Girls
+Essex & Southend,St Bernard's High School,"Milton Road, Westcliff-on-Sea, SS0 0AL",SS0 0AL,Girls
+Essex & Southend,St Thomas More High School,"Kenilworth Gardens, Westcliff-on-Sea, SS0 0BW",SS0 0BW,Boys
+Essex & Southend,Westcliff High School for Boys,"Kenilworth Gardens, Westcliff-on-Sea, SS0 0BP",SS0 0BP,Boys
+Essex & Southend,Westcliff High School for Girls,"Kenilworth Gardens, Westcliff-on-Sea, SS0 9TD",SS0 9TD,Girls
+Hertfordshire,Dame Alice Owen's School,"Dugdale Hill Lane, Potters Bar, EN6 2DU",EN6 2DU,Mixed (Selective Stream)
+Hertfordshire,Parmiter's School,"High Elms Lane, Garston, Watford, WD25 0UU",WD25 0UU,Mixed (Selective Stream)
+Hertfordshire,Rickmansworth School,"Scots Hill, Rickmansworth, WD3 3AQ",WD3 3AQ,Mixed (Selective Stream)
+Hertfordshire,St Clement Danes School,"Chenies Road, Chorleywood, WD3 6EW",WD3 6EW,Mixed (Selective Stream)
+Hertfordshire,Watford Grammar School for Boys,"Rickmansworth Road, Watford, WD18 7JF",WD18 7JF,Boys (Selective Stream)
+Hertfordshire,Watford Grammar School for Girls,"Lady's Close, Watford, WD18 0AE",WD18 0AE,Girls (Selective Stream)
+Kent & Medway,Barton Court Grammar School,"Canterbury, Kent, CT1 3SE",CT1 3SE,Mixed
+Kent & Medway,Borden Grammar School,"Avenue of Remembrance, Sittingbourne, Kent, ME10 4BD",ME10 4BD,Boys
+Kent & Medway,Chatham Grammar,"Holcombe Road, Chatham, Kent, ME4 5SD",ME4 5SD,Girls
+Kent & Medway,Chatham & Clarendon Grammar School,"Chatham Street, Ramsgate, Kent, CT11 7PS",CT11 7PS,Mixed
+Kent & Medway,Cranbrook School,"Barham Road, Cranbrook, Kent, TN17 3JD",TN17 3JD,Mixed
+Kent & Medway,Dane Court Grammar School,"Broadstairs Road, Broadstairs, Kent, CT10 2RT",CT10 2RT,Mixed
+Kent & Medway,Dartford Grammar School,"West Hill, Dartford, Kent, DA1 2HW",DA1 2HW,Boys
+Kent & Medway,Dartford Grammar School for Girls,"Shepherds Lane, Dartford, Kent, DA1 2NT",DA1 2NT,Girls
+Kent & Medway,Dover Grammar School for Boys,"Astor Avenue, Dover, Kent, CT17 0DQ",CT17 0DQ,Boys
+Kent & Medway,Dover Grammar School for Girls,"Frith Road, Dover, Kent, CT16 2PZ",CT16 2PZ,Girls
+Kent & Medway,Folkestone School for Girls,"Coolinge Lane, Folkestone, Kent, CT20 3RB",CT20 3RB,Girls
+Kent & Medway,Fort Pitt Grammar School,"Fort Pitt Hill, Chatham, Kent, ME4 6BB",ME4 6BB,Girls
+Kent & Medway,Gravesend Grammar School,"Church Walk, Gravesend, Kent, DA12 2PR",DA12 2PR,Boys
+Kent & Medway,Harvey Grammar School,"Cheriton Road, Folkestone, Kent, CT19 5JY",CT19 5JY,Boys
+Kent & Medway,Highsted Grammar School,"Highsted Road, Sittingbourne, Kent, ME10 4PT",ME10 4PT,Girls
+Kent & Medway,Highworth Grammar School,"Quantock Drive, Ashford, Kent, TN24 8AL",TN24 8AL,Girls
+Kent & Medway,Holcombe Grammar School,"Letchworth Avenue, Chatham, Kent, ME4 6JB",ME4 6JB,Boys
+Kent & Medway,Invicta Grammar School,"Huntsman Lane, Maidstone, Kent, ME14 5DS",ME14 5DS,Girls
+Kent & Medway,Maidstone Grammar School,"Barton Road, Maidstone, Kent, ME15 7BT",ME15 7BT,Boys
+Kent & Medway,Maidstone Grammar School for Girls,"Buckland Road, Maidstone, Kent, ME16 0SF",ME16 0SF,Girls
+Kent & Medway,Mayfield Grammar School,"Pelham Road, Gravesend, Kent, DA11 0JE",DA11 0JE,Girls
+Kent & Medway,Oakwood Park Grammar School,"Oakwood Park, Maidstone, Kent, ME16 8AH",ME16 8AH,Boys
+Kent & Medway,Queen Elizabeth's Grammar School,"Abbey Place, Faversham, Kent, ME13 7BQ",ME13 7BQ,Mixed
+Kent & Medway,Rainham Mark Grammar School,"Pump Lane, Rainham, Gillingham, Kent, ME8 7AJ",ME8 7AJ,Mixed
+Kent & Medway,Rochester Grammar School,"Maidstone Road, Rochester, Kent, ME1 3BY",ME1 3BY,Girls
+Kent & Medway,Simon Langton Girls' Grammar School,"Old Dover Road, Canterbury, Kent, CT1 3EW",CT1 3EW,Girls
+Kent & Medway,Simon Langton Grammar School for Boys,"Nackington Road, Canterbury, Kent, CT4 7AS",CT4 7AS,Boys
+Kent & Medway,Sir Joseph Williamson's Mathematical School,"Maidstone Road, Rochester, Kent, ME1 3EL",ME1 3EL,Boys
+Kent & Medway,Sir Roger Manwood's School,"Manwood Road, Sandwich, Kent, CT13 9JX",CT13 9JX,Mixed
+Kent & Medway,The Judd School,"Brook Street, Tonbridge, Kent, TN9 2PN",TN9 2PN,Boys
+Kent & Medway,The Norton Knatchbull School,"Hythe Road, Ashford, Kent, TN24 0QJ",TN24 0QJ,Boys
+Kent & Medway,The Skinners' School,"St John's Road, Tunbridge Wells, Kent, TN4 9PG",TN4 9PG,Boys
+Kent & Medway,Tonbridge Grammar School,"Deakin Leas, Tonbridge, Kent, TN9 2LL",TN9 2LL,Girls
+Kent & Medway,Tunbridge Wells Girls' Grammar School,"Southfield Road, Tunbridge Wells, Kent, TN4 9XB",TN4 9XB,Girls
+Kent & Medway,Tunbridge Wells Grammar School for Boys,"St John's Road, Tunbridge Wells, Kent, TN4 9XB",TN4 9XB,Boys
+Kent & Medway,Weald of Kent Grammar School,"Tudeley Lane, Tonbridge, Kent, TN9 2JP",TN9 2JP,Girls
+Kent & Medway,Wilmington Grammar School for Boys,"Common Lane, Wilmington, Dartford, Kent, DA2 7BF",DA2 7BF,Boys
+Kent & Medway,Wilmington Grammar School for Girls,"Parsons Lane, Wilmington, Dartford, Kent, DA2 7BB",DA2 7BB,Girls
+Kingston,The Tiffin Girls' School,"Richmond Road, Kingston upon Thames, KT2 5PL",KT2 5PL,Girls
+Kingston,Tiffin School,"Queen Elizabeth Road, Kingston upon Thames, KT1 2JG",KT1 2JG,Boys
+Redbridge,Ilford County High School,"Fremantle Road, Barkingside, Ilford, IG6 2JB",IG6 2JB,Boys
+Redbridge,Woodford County High School,"High Road, Woodford Green, IG8 9LA",IG8 9LA,Girls
+Sutton,Nonsuch High School for Girls,"Ewell Road, Cheam, Sutton, SM3 8AB",SM3 8AB,Girls
+Sutton,Sutton Grammar School,"Manor Lane, Sutton, SM1 4AS",SM1 4AS,Boys
+Sutton,Wallington County Grammar School,"Croydon Road, Wallington, SM6 7PH",SM6 7PH,Boys
+Sutton,Wallington High School for Girls,"Woodcote Road, Wallington, SM6 0LT",SM6 0LT,Girls
+Sutton,Wilson's School,"Mollison Drive, Wallington, SM6 9JW",SM6 9JW,Boys

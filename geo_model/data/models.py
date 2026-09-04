@@ -184,3 +184,25 @@ class PrivateSchool(Base):
     day_boarding_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     religious_affiliation: Mapped[str | None] = mapped_column(String(64), nullable=True)
     geocoded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GrammarSchool(Base):
+    """A curated, pre-geocoded dataset entry (selective state grammar /
+    partially-selective consortium schools register) -- same shape and
+    purpose as PrivateSchool: LocalDatasetProvider scans this table (under
+    the "grammar_schools" dataset key) to answer nearby_amenities()."""
+
+    __tablename__ = "grammar_schools"
+    __table_args__ = (
+        UniqueConstraint("name", "postcode", name="uq_grammar_school_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    region: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    address: Mapped[str] = mapped_column(String(512), nullable=False)
+    postcode: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long: Mapped[float | None] = mapped_column(Float, nullable=True)
+    intake_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    geocoded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

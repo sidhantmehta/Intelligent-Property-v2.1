@@ -39,6 +39,7 @@ from geo_model.artifact_sync import export_config_doc, export_results_for_artifa
 from geo_model.config import load_model_config  # noqa: E402
 from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
+from geo_model.grammar_schools import import_grammar_schools  # noqa: E402
 from geo_model.postcodes import seed_outcodes_table  # noqa: E402
 from geo_model.private_schools import import_private_schools  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
@@ -48,6 +49,7 @@ logger = get_logger(__name__)
 
 DEFAULT_OUTCODES_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes.txt"
 DEFAULT_PRIVATE_SCHOOLS_CSV = REPO_ROOT / "reference_data" / "private_schools_greater_london.csv"
+DEFAULT_GRAMMAR_SCHOOLS_CSV = REPO_ROOT / "reference_data" / "grammar_schools_london_home_counties.csv"
 DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_london_and_home_counties.txt"
 REFERENCE_DATA_DIR = REPO_ROOT / "reference_data"
 
@@ -81,6 +83,13 @@ def cmd_import_private_schools(args: argparse.Namespace) -> None:
     pipeline.ensure_db_ready()
     with get_session() as session:
         result = import_private_schools(session, args.csv)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_import_grammar_schools(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    with get_session() as session:
+        result = import_grammar_schools(session, args.csv)
     print(json.dumps(result, indent=2))
 
 
@@ -144,6 +153,10 @@ def main() -> None:
     p = sub.add_parser("import-private-schools", help="Import/geocode the private schools register (reference_data/private_schools_greater_london.csv)")
     p.add_argument("--csv", type=Path, default=DEFAULT_PRIVATE_SCHOOLS_CSV)
     p.set_defaults(func=cmd_import_private_schools)
+
+    p = sub.add_parser("import-grammar-schools", help="Import/geocode the grammar schools register (reference_data/grammar_schools_london_home_counties.csv)")
+    p.add_argument("--csv", type=Path, default=DEFAULT_GRAMMAR_SCHOOLS_CSV)
+    p.set_defaults(func=cmd_import_grammar_schools)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),
