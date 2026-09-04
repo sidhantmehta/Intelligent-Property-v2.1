@@ -149,6 +149,7 @@
   td.outcode { font-family: var(--font-mono); font-weight: 600; }
   td.score { font-family: var(--font-mono); font-weight: 700; }
   td.cell { font-family: var(--font-mono); border-radius: 4px; text-align: right; cursor: pointer; }
+  td.cell.zero-weight { opacity: .5; font-style: italic; }
 
   tr.drill-row td { padding: 0; border-bottom: 1px solid var(--grid); }
   .drill-panel { background: var(--surface-2); padding: 10px 14px 12px; }
@@ -229,7 +230,7 @@
 
       <div class="card">
         <h2>Scores by outcode</h2>
-        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given outcode at a glance.</div>
+        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given outcode at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total.</div>
         <div class="filter-bar" id="filterBar" style="margin-top:10px;"></div>
         <div class="table-scroll" style="margin-top:10px;">
           <table id="resultsTable">
@@ -889,8 +890,14 @@
         var td = document.createElement("td");
         td.className = "cell";
         if (cell) {
-          td.style.background = rampColor(cell.normalized_score);
-          td.style.color = rampTextColor(cell.normalized_score);
+          var zeroWeight = !cell.weight_applied || cell.weight_applied <= 0;
+          if (zeroWeight) {
+            td.classList.add("zero-weight");
+            td.title = "Weight is 0 — this column doesn't count toward Total.";
+          } else {
+            td.style.background = rampColor(cell.normalized_score);
+            td.style.color = rampTextColor(cell.normalized_score);
+          }
           td.textContent = c.isTravel
             ? (cell.raw_score >= 0 ? cell.raw_score.toFixed(0) + "m" : "–")
             : cell.raw_score.toFixed(2);
