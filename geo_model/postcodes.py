@@ -12,7 +12,7 @@ data row (a debug/test fixture, not real reference data).
 from __future__ import annotations
 
 import json
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -24,9 +24,9 @@ from geo_model.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-POSTCODES_IO_BULK_OUTCODES_URL = "https://api.postcodes.io/outcodes"
-_BATCH_SIZE = 100
+POSTCODES_IO_OUTCODE_URL = "https://api.postcodes.io/outcodes/{}"
 _TIMEOUT_SECONDS = 15
+_MAX_WORKERS = 10
 
 
 def load_outcode_list(outcodes_file: Path) -> list[str]:
@@ -37,47 +37,53 @@ def load_outcode_list(outcodes_file: Path) -> list[str]:
     return [entry["outcode"] for entry in raw]
 
 
+def _fetch_one(session: requests.Session, outcode: str) -> tuple[str, tuple[float, float] | None]:
+    try:
+        resp = session.get(POSTCODES_IO_OUTCODE_URL.format(outcode), timeout=_TIMEOUT_SECONDS)
+    except requests.RequestException as e:
+        logger.error("postcodes.io lookup failed for outcode=%s: %s", outcode, e)
+        return outcode, None
+
+    if resp.status_code == 404:
+        logger.warning("postcodes.io has no data for outcode=%s", outcode)
+        return outcode, None
+    if resp.status_code != 200:
+        logger.error("postcodes.io lookup failed for outcode=%s: status=%d body=%s", outcode, resp.status_code, resp.text[:300])
+        return outcode, None
+
+    data = resp.json()["result"]
+    return outcode, (data["latitude"], data["longitude"])
+
+
 def fetch_outcode_centroids(outcodes: list[str]) -> dict[str, tuple[float, float]]:
-    """Looks up (lat, long) for each outcode via postcodes.io's bulk
-    /outcodes endpoint, batched. Outcodes postcodes.io doesn't recognise
-    are simply absent from the result (logged, not raised)."""
+    """Looks up (lat, long) for each outcode via postcodes.io's per-outcode
+    GET endpoint -- postcodes.io has no bulk lookup for outcodes (only for
+    full postcodes), so this is one request per outcode, parallelized with
+    a small thread pool. Outcodes postcodes.io doesn't recognise are simply
+    absent from the result (logged, not raised)."""
     session = requests.Session()
     result: dict[str, tuple[float, float]] = {}
 
-    for i in range(0, len(outcodes), _BATCH_SIZE):
-        batch = outcodes[i : i + _BATCH_SIZE]
-        try:
-            resp = session.post(
-                POSTCODES_IO_BULK_OUTCODES_URL,
-                json={"outcodes": batch},
-                timeout=_TIMEOUT_SECONDS,
-            )
-        except requests.RequestException as e:
-            logger.error("postcodes.io batch %d-%d failed: %s", i, i + len(batch), e)
-            continue
-
-        if resp.status_code != 200:
-            logger.error("postcodes.io batch %d-%d failed: status=%d body=%s", i, i + len(batch), resp.status_code, resp.text[:300])
-            continue
-
-        for entry in resp.json().get("result", []):
-            query = entry.get("query")
-            data = entry.get("result")
-            if data is None:
-                logger.warning("postcodes.io has no data for outcode=%r", query)
-                continue
-            result[data["outcode"]] = (data["latitude"], data["longitude"])
-
-        logger.info("postcodes.io: resolved %d/%d outcodes so far", len(result), i + len(batch))
-        time.sleep(0.2)  # be a polite citizen of a free public API
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {pool.submit(_fetch_one, session, o): o for o in outcodes}
+        for i, future in enumerate(as_completed(futures), start=1):
+            outcode, centroid = future.result()
+            if centroid is not None:
+                result[outcode] = centroid
+            if i % 100 == 0 or i == len(outcodes):
+                logger.info("postcodes.io: resolved %d/%d outcodes so far (%d looked up)", len(result), len(outcodes), i)
 
     return result
 
 
-def seed_outcodes_table(session: Session, outcodes_file: Path) -> int:
-    """Fetches centroids for every outcode in ``outcodes_file`` and
-    upserts them into the outcodes table. Returns the number seeded."""
+def seed_outcodes_table(session: Session, outcodes_file: Path, outcode_filter: list[str] | None = None) -> int:
+    """Fetches centroids for every outcode in ``outcodes_file`` (or, if
+    ``outcode_filter`` is given, just that subset of it) and upserts them
+    into the outcodes table. Returns the number seeded."""
     outcode_list = load_outcode_list(outcodes_file)
+    if outcode_filter:
+        wanted = set(outcode_filter)
+        outcode_list = [o for o in outcode_list if o in wanted]
     logger.info("Seeding outcodes table from %d outcodes in %s", len(outcode_list), outcodes_file)
     centroids = fetch_outcode_centroids(outcode_list)
 

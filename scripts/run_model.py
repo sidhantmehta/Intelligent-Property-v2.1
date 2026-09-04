@@ -9,13 +9,15 @@ Usage:
     python scripts/run_model.py refresh-geo-data [--outcodes-file PATH]
     python scripts/run_model.py run-model [--outcodes-file PATH]
 
-With no --outcodes-file, both refresh-geo-data and run-model default to
-the small London debug subset in
-connector_scraper_data/outcodes_debug_London_zone1_zone2.txt -- NOT the
-full ~3,000 UK outcodes -- because a full run means outcodes x categories
-(and x reference points, for travel time) individual HERE API calls, which
-is expensive and slow to do by accident. Pass --all to score the whole
-outcodes.txt list.
+With no --outcodes-file, seed-outcodes, refresh-geo-data and run-model all
+default to a small London sample in
+connector_scraper_data/outcodes_london_sample.txt -- NOT the full ~2,900 UK
+outcodes -- because a full run means outcodes x categories (and x reference
+points, for travel time) individual HERE API calls, which is expensive and
+slow to do by accident. Pass --all to scope to the whole outcodes.txt list.
+(v2's own outcodes_debug_London_zone1_zone2.txt turned out to contain a
+single outcode -- a debug fixture, not a usable London subset -- so this
+sample file replaces it as the default scope.)
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: 
 logger = get_logger(__name__)
 
 DEFAULT_OUTCODES_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes.txt"
-DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_debug_London_zone1_zone2.txt"
+DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_london_sample.txt"
 REFERENCE_DATA_DIR = REPO_ROOT / "reference_data"
 
 
@@ -54,8 +56,9 @@ def _read_scope(outcodes_file: Path | None, use_all: bool) -> list[str] | None:
 
 def cmd_seed_outcodes(args: argparse.Namespace) -> None:
     pipeline.ensure_db_ready()
+    scope = _read_scope(args.outcodes_file, args.all)
     with get_session() as session:
-        n = seed_outcodes_table(session, DEFAULT_OUTCODES_FILE)
+        n = seed_outcodes_table(session, DEFAULT_OUTCODES_FILE, outcode_filter=scope)
     print(f"Seeded {n} outcode centroids.")
 
 
@@ -95,13 +98,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("seed-outcodes", help="Seed the outcodes table with lat/long centroids from postcodes.io")
     sub.add_parser("seed-legacy", help="Import v2's reference_data/*.txt as a stale-flagged starting amenity cache")
 
-    for name, fn in (("refresh-geo-data", cmd_refresh_geo_data), ("run-model", cmd_run_model)):
+    for name, fn in (
+        ("seed-outcodes", cmd_seed_outcodes),
+        ("refresh-geo-data", cmd_refresh_geo_data),
+        ("run-model", cmd_run_model),
+    ):
         p = sub.add_parser(name)
         p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to")
-        p.add_argument("--all", action="store_true", help="Scope to every outcode in the DB, not just the London debug subset")
+        p.add_argument("--all", action="store_true", help="Scope to every outcode in outcodes.txt, not just the London sample")
         p.set_defaults(func=fn)
 
     p = sub.add_parser("export-artifact-config", help="Write config.yaml as a config/current doc for the Artifact frontend")
@@ -115,9 +121,7 @@ def main() -> None:
     p.set_defaults(func=cmd_export_artifact_results)
 
     args = parser.parse_args()
-    if args.command == "seed-outcodes":
-        cmd_seed_outcodes(args)
-    elif args.command == "seed-legacy":
+    if args.command == "seed-legacy":
         cmd_seed_legacy(args)
     else:
         args.func(args)

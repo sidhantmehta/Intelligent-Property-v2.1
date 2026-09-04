@@ -134,21 +134,37 @@ def _fetch_and_upsert_amenities(
             )
         )
         now = dt.datetime.now(dt.timezone.utc)
+        # Providers can (and HERE's Discover does) return duplicate POIs for
+        # a single query -- e.g. the same chain outlet listed twice at
+        # identical coordinates. Dedupe on the same fields the unique
+        # constraint covers, and ignore-on-conflict as a second safety net,
+        # rather than letting a provider's dirty data crash the run.
+        seen: set[tuple] = set()
+        rows = []
         for r in results:
-            session.add(
-                Amenity(
-                    outcode=key.outcode,
-                    provider=provider.name,
-                    category_key=key.category_key,
-                    title=r.title,
-                    address=r.address,
-                    lat=r.lat,
-                    long=r.long,
-                    distance_m=r.distance_m,
-                    fetched_at=now,
-                    is_seed=False,
-                )
+            identity = (key.outcode, provider.name, key.category_key, r.title, r.lat, r.long)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            rows.append(
+                {
+                    "outcode": key.outcode,
+                    "provider": provider.name,
+                    "category_key": key.category_key,
+                    "title": r.title,
+                    "address": r.address,
+                    "lat": r.lat,
+                    "long": r.long,
+                    "distance_m": r.distance_m,
+                    "fetched_at": now,
+                    "is_seed": False,
+                }
             )
+        if rows:
+            stmt = sqlite_insert(Amenity).values(rows).on_conflict_do_nothing(
+                index_elements=["outcode", "provider", "category_key", "title", "lat", "long"]
+            )
+            session.execute(stmt)
         log.info(
             "Fetched %d/%d: outcode=%s category=%s -> %d amenities",
             i, len(keys), key.outcode, key.category_key, len(results),
