@@ -6,8 +6,8 @@ real logic lives in geo_model.pipeline and below.
 Usage:
     python scripts/run_model.py seed-outcodes
     python scripts/run_model.py seed-legacy
-    python scripts/run_model.py refresh-geo-data [--outcodes-file PATH]
-    python scripts/run_model.py run-model [--outcodes-file PATH]
+    python scripts/run_model.py refresh-geo-data [--outcodes-file PATH] [--overrides-file PATH]
+    python scripts/run_model.py run-model [--outcodes-file PATH] [--overrides-file PATH]
     python scripts/run_model.py usage-summary [--month | --since-days N] [--provider here]
 
 With no --outcodes-file, seed-outcodes, refresh-geo-data and run-model all
@@ -22,6 +22,11 @@ categories (~7,500) discover calls plus outcodes x reference-points (~1,360)
 travel-time calls -- real HERE quota, not free. Check
 `usage-summary` before and after a big run. Subsequent runs only fetch
 what's missing, so this cost is mostly one-time per outcode/category pair.
+
+--overrides-file takes a JSON file shaped like the Artifact's config/current
+doc (what the dashboard's settings panel saves) and merges it on top of
+config.yaml, so a re-run picks up weights/reference-points a viewer edited
+in the dashboard rather than always using the repo's checked-in defaults.
 """
 from __future__ import annotations
 
@@ -35,7 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from geo_model import pipeline  # noqa: E402
-from geo_model.artifact_sync import export_config_doc, export_results_for_artifact  # noqa: E402
+from geo_model.artifact_sync import artifact_doc_to_overrides, export_config_doc, export_results_for_artifact  # noqa: E402
 from geo_model.config import load_model_config  # noqa: E402
 from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
@@ -93,15 +98,24 @@ def cmd_import_grammar_schools(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def _load_config_with_overrides(overrides_file: Path | None):
+    overrides = None
+    if overrides_file is not None:
+        with open(overrides_file, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        overrides = artifact_doc_to_overrides(doc)
+    return load_model_config(overrides=overrides)
+
+
 def cmd_refresh_geo_data(args: argparse.Namespace) -> None:
-    config = load_model_config()
+    config = _load_config_with_overrides(args.overrides_file)
     scope = _read_scope(args.outcodes_file, args.all)
     result = pipeline.refresh_geo_data(config, outcode_filter=scope)
     print(json.dumps(result, indent=2))
 
 
 def cmd_run_model(args: argparse.Namespace) -> None:
-    config = load_model_config()
+    config = _load_config_with_overrides(args.overrides_file)
     scope = _read_scope(args.outcodes_file, args.all)
     result = pipeline.run_model(config, outcode_filter=scope)
     print(json.dumps(result, indent=2))
@@ -166,6 +180,11 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to")
         p.add_argument("--all", action="store_true", help="Scope to every outcode in outcodes.txt, not just London + Home Counties")
+        p.add_argument(
+            "--overrides-file", type=Path, default=None,
+            help="JSON file shaped like the Artifact's config/current doc (weights/reference-points); "
+                 "merged on top of config.yaml via artifact_sync.artifact_doc_to_overrides",
+        )
         p.set_defaults(func=fn)
 
     p = sub.add_parser("export-artifact-config", help="Write config.yaml as a config/current doc for the Artifact frontend")
