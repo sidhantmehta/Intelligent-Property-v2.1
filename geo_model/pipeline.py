@@ -29,6 +29,7 @@ from geo_model.config import ModelConfig, load_settings
 from geo_model.data.db import get_session, init_db
 from geo_model.data.models import (
     Amenity,
+    ApiUsage,
     Outcode,
     ReferencePoint as ReferencePointRow,
     RunConfig,
@@ -211,6 +212,32 @@ def _fetch_and_upsert_travel_times(
     session.commit()
 
 
+def _persist_usage_log(session: Session, provider: GeoProvider, run_id: str, log) -> int:
+    """Copies everything the provider recorded during this run into the
+    api_usage table, so usage stays queryable/reconcilable against the
+    provider's own dashboard long after the run's log lines have rotated
+    away. Safe to call even for providers that don't track usage (returns
+    an empty list by default -- see GeoProvider.get_usage_log)."""
+    records = provider.get_usage_log()
+    if not records:
+        return 0
+    session.execute(
+        ApiUsage.__table__.insert(),
+        [
+            {
+                "provider": provider.name,
+                "call_type": r.call_type,
+                "status_code": r.status_code,
+                "run_id": run_id,
+                "called_at": r.called_at,
+            }
+            for r in records
+        ],
+    )
+    log.info("Recorded %d %s API call(s) for usage tracking", len(records), provider.name)
+    return len(records)
+
+
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:
     """Explicit refresh: force-fetches every (outcode, category) pair
     that's missing or older than config.staleness_days, and recomputes
@@ -240,6 +267,8 @@ def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = Non
 
         travel_keys = [(o.outcode, rp.name) for o in outcodes for rp in config.reference_points]
         _fetch_and_upsert_travel_times(session, provider, config, outcodes, reference_points, travel_keys, log)
+
+        _persist_usage_log(session, provider, run_id, log)
 
     elapsed = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()
     log.info("refresh_geo_data complete in %.1fs", elapsed)
@@ -342,6 +371,8 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
                         weight_applied=cat_score.weight_applied,
                     )
                 )
+
+        _persist_usage_log(session, provider, run_id, log)
         session.commit()
 
     elapsed = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()

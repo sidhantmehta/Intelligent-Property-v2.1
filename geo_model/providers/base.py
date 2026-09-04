@@ -7,6 +7,7 @@ caching logic.
 """
 from __future__ import annotations
 
+import datetime as dt
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -26,10 +27,31 @@ class AmenityResult:
     distance_m: float | None
 
 
+@dataclass(frozen=True)
+class UsageRecord:
+    """One outbound request a provider actually sent and got a response
+    for (any status code) -- used to reconcile against the provider's own
+    quota/billing dashboard. A request that never reached the provider (a
+    network/proxy failure) is NOT a UsageRecord, since it can't have been
+    billed."""
+
+    call_type: str
+    status_code: int
+    called_at: dt.datetime
+
+
 class GeoProvider(ABC):
     """A geo/places/routing data source."""
 
     name: str
+
+    def get_usage_log(self) -> list[UsageRecord]:
+        """Every request this provider instance has sent so far that got a
+        response. Default: none -- a provider that never talks to a metered
+        API (a test double, a free/unmetered source) doesn't need to
+        override this. geo_model.pipeline persists these after each run so
+        usage stays reconcilable against the provider's own dashboard."""
+        return []
 
     @abstractmethod
     def geocode(self, address: str) -> GeoPoint | None:

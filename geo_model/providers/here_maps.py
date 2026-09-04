@@ -9,29 +9,22 @@ which are retired/deprecated:
   - Driving/walking/etc routing: https://router.hereapi.com/v8/routes
   - Public transit routing:       https://transit.router.hereapi.com/v8/routes
 
-NOTE ON VERIFICATION: this environment's egress proxy blocks *.here.com, so
-these endpoints/params/response shapes could not be exercised against a
-live HERE account while writing this. They're built from HERE's current,
-documented v7/v8 API family (a real step up from v2's retired v1
-"Places"/routing-7.2 demo APIs), but the FIRST thing to do once a real
-HERE_API_KEY is available is the Phase 5 smoke test (geocode one address,
-discover amenities for one outcode, one travel-time lookup) to confirm
-these are exactly right and fix anything that's drifted -- see
-config.yaml's comment on amenity_categories for the same caveat applied to
-category codes (sidestepped here by using free-text `q=` queries instead).
+Verified end-to-end against a live HERE account (Sep 2026): all four
+endpoints, including the transit routing one, return real, sane data.
 
-If `transit.router.hereapi.com` turns out not to be available on the
-account's plan, swap `travel_mode: publicTransport` in config.yaml for one
-of the modes below and everything else keeps working unchanged.
+Every request that gets a response (any status code) is recorded via
+get_usage_log() -- geo_model.pipeline persists these to the ApiUsage table
+after each run so usage stays reconcilable against HERE's own dashboard.
 """
 from __future__ import annotations
 
+import datetime as dt
 import time
 
 import requests
 
 from geo_model.logging_setup import get_logger
-from geo_model.providers.base import AmenityResult, GeoPoint, GeoProvider
+from geo_model.providers.base import AmenityResult, GeoPoint, GeoProvider, UsageRecord
 
 logger = get_logger(__name__)
 
@@ -56,10 +49,14 @@ class HereMapsProvider(GeoProvider):
             raise ValueError("HERE_API_KEY is required to construct HereMapsProvider")
         self._api_key = api_key
         self._session = requests.Session()
+        self._usage_log: list[UsageRecord] = []
+
+    def get_usage_log(self) -> list[UsageRecord]:
+        return list(self._usage_log)
 
     def geocode(self, address: str) -> GeoPoint | None:
         params = {"q": address, "apiKey": self._api_key, "limit": 1}
-        data = self._get(GEOCODE_URL, params, context=f"geocode({address!r})")
+        data = self._get(GEOCODE_URL, params, context=f"geocode({address!r})", call_type="geocode")
         if data is None:
             return None
         items = data.get("items", [])
@@ -83,7 +80,7 @@ class HereMapsProvider(GeoProvider):
             "apiKey": self._api_key,
         }
         context = f"discover(q={query!r}, at={origin.lat},{origin.long})"
-        data = self._get(DISCOVER_URL, params, context=context)
+        data = self._get(DISCOVER_URL, params, context=context, call_type="discover")
         if data is None:
             return []
 
@@ -127,7 +124,7 @@ class HereMapsProvider(GeoProvider):
             "apiKey": self._api_key,
         }
         context = f"route(mode={mode}, {origin.lat},{origin.long} -> {destination.lat},{destination.long})"
-        data = self._get(ROUTING_URL, params, context=context)
+        data = self._get(ROUTING_URL, params, context=context, call_type=f"route:{mode}")
         if data is None:
             return None
         return self._minutes_from_routing_v8(data, context)
@@ -139,7 +136,7 @@ class HereMapsProvider(GeoProvider):
             "apiKey": self._api_key,
         }
         context = f"transit_route({origin.lat},{origin.long} -> {destination.lat},{destination.long})"
-        data = self._get(TRANSIT_ROUTING_URL, params, context=context)
+        data = self._get(TRANSIT_ROUTING_URL, params, context=context, call_type="transit_route")
         if data is None:
             return None
         try:
@@ -149,8 +146,6 @@ class HereMapsProvider(GeoProvider):
         except (KeyError, IndexError):
             logger.warning("%s: unexpected transit response shape, no duration extracted", context)
             return None
-        import datetime as dt
-
         try:
             start_dt = dt.datetime.fromisoformat(start)
             end_dt = dt.datetime.fromisoformat(end)
@@ -168,7 +163,7 @@ class HereMapsProvider(GeoProvider):
             return None
         return duration_s / 60.0
 
-    def _get(self, url: str, params: dict, context: str) -> dict | None:
+    def _get(self, url: str, params: dict, context: str, call_type: str) -> dict | None:
         for attempt in range(1, _RETRIES + 1):
             start = time.monotonic()
             try:
@@ -177,6 +172,13 @@ class HereMapsProvider(GeoProvider):
                 logger.info(
                     "%s -> status=%d elapsed_ms=%.0f attempt=%d/%d",
                     context, resp.status_code, elapsed_ms, attempt, _RETRIES,
+                )
+                # A response -- any status code -- means HERE received and
+                # (per their billing model) most likely counted this
+                # request. A request that raises below (never got a
+                # response) does NOT get recorded -- see UsageRecord.
+                self._usage_log.append(
+                    UsageRecord(call_type=call_type, status_code=resp.status_code, called_at=dt.datetime.now(dt.timezone.utc))
                 )
                 if resp.status_code == 200:
                     return resp.json()

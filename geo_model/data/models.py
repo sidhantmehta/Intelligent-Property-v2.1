@@ -139,3 +139,21 @@ class RunResultCategory(Base):
     weight_applied: Mapped[float] = mapped_column(Float, nullable=False)
 
     run_result: Mapped["RunResult"] = relationship(back_populates="categories")
+
+
+class ApiUsage(Base):
+    """One outbound call a provider made and got a response for (any
+    status code), persisted so usage can be reconciled against the
+    provider's own quota/billing dashboard over time. Written by
+    geo_model.pipeline from a provider's get_usage_log() after each run;
+    ``run_id`` is nullable since not every provider call happens inside a
+    scored run (e.g. reference-point geocoding during a bare cache check)."""
+
+    __tablename__ = "api_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    call_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    called_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

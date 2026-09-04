@@ -8,6 +8,7 @@ Usage:
     python scripts/run_model.py seed-legacy
     python scripts/run_model.py refresh-geo-data [--outcodes-file PATH]
     python scripts/run_model.py run-model [--outcodes-file PATH]
+    python scripts/run_model.py usage-summary [--month | --since-days N] [--provider here]
 
 With no --outcodes-file, seed-outcodes, refresh-geo-data and run-model all
 default to a small London sample in
@@ -22,6 +23,7 @@ sample file replaces it as the default scope.)
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from pathlib import Path
@@ -36,6 +38,7 @@ from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
 from geo_model.postcodes import seed_outcodes_table  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
+from geo_model.usage_report import current_calendar_month_start, summarize_usage  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -94,6 +97,32 @@ def cmd_export_artifact_results(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_usage_summary(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    since = None
+    if args.month:
+        since = current_calendar_month_start()
+    elif args.since_days is not None:
+        since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.since_days)
+
+    with get_session() as session:
+        summary = summarize_usage(session, since=since, provider=args.provider)
+
+    print(json.dumps(
+        {
+            "note": "Local count of calls this pipeline made and got a response for -- not a substitute for the provider's own usage/billing dashboard.",
+            "since": summary.since.isoformat() if summary.since else "all time",
+            "total_calls": summary.total_calls,
+            "by_provider": summary.by_provider,
+            "by_call_type": summary.by_call_type,
+            "by_status_code": summary.by_status,
+            "first_call_at": summary.first_call_at.isoformat() if summary.first_call_at else None,
+            "last_call_at": summary.last_call_at.isoformat() if summary.last_call_at else None,
+        },
+        indent=2,
+    ))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -119,6 +148,13 @@ def main() -> None:
     p.add_argument("--out-dir", type=Path, default=REPO_ROOT / "frontend" / "export" / "results")
     p.add_argument("--example", action="store_true", help="Flag this export as example/illustrative data")
     p.set_defaults(func=cmd_export_artifact_results)
+
+    p = sub.add_parser("usage-summary", help="Summarize provider API calls this pipeline has made and recorded")
+    p.add_argument("--provider", type=str, default=None, help="Restrict to one provider (e.g. 'here')")
+    scope_group = p.add_mutually_exclusive_group()
+    scope_group.add_argument("--month", action="store_true", help="Only calls since the start of the current calendar month")
+    scope_group.add_argument("--since-days", type=int, default=None, help="Only calls in the last N days")
+    p.set_defaults(func=cmd_usage_summary)
 
     args = parser.parse_args()
     if args.command == "seed-legacy":
