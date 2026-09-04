@@ -11,14 +11,17 @@ Usage:
     python scripts/run_model.py usage-summary [--month | --since-days N] [--provider here]
 
 With no --outcodes-file, seed-outcodes, refresh-geo-data and run-model all
-default to a small London sample in
-connector_scraper_data/outcodes_london_sample.txt -- NOT the full ~2,900 UK
-outcodes -- because a full run means outcodes x categories (and x reference
-points, for travel time) individual HERE API calls, which is expensive and
-slow to do by accident. Pass --all to scope to the whole outcodes.txt list.
-(v2's own outcodes_debug_London_zone1_zone2.txt turned out to contain a
-single outcode -- a debug fixture, not a usable London subset -- so this
-sample file replaces it as the default scope.)
+default to connector_scraper_data/outcodes_london_and_home_counties.txt
+(681 outcodes: Inner/Greater London + the surrounding commuter-belt
+counties) -- NOT the full ~2,900 UK outcodes. Pass --outcodes-file
+connector_scraper_data/outcodes_london_sample.txt for a cheap 16-outcode
+smoke test, or --all to scope to the whole outcodes.txt list.
+
+A first full run against the 681-outcode default means roughly outcodes x
+categories (~7,500) discover calls plus outcodes x reference-points (~1,360)
+travel-time calls -- real HERE quota, not free. Check
+`usage-summary` before and after a big run. Subsequent runs only fetch
+what's missing, so this cost is mostly one-time per outcode/category pair.
 """
 from __future__ import annotations
 
@@ -45,7 +48,7 @@ logger = get_logger(__name__)
 
 DEFAULT_OUTCODES_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes.txt"
 DEFAULT_PRIVATE_SCHOOLS_CSV = REPO_ROOT / "reference_data" / "private_schools_greater_london.csv"
-DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_london_sample.txt"
+DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_london_and_home_counties.txt"
 REFERENCE_DATA_DIR = REPO_ROOT / "reference_data"
 
 
@@ -149,7 +152,7 @@ def main() -> None:
     ):
         p = sub.add_parser(name)
         p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to")
-        p.add_argument("--all", action="store_true", help="Scope to every outcode in outcodes.txt, not just the London sample")
+        p.add_argument("--all", action="store_true", help="Scope to every outcode in outcodes.txt, not just London + Home Counties")
         p.set_defaults(func=fn)
 
     p = sub.add_parser("export-artifact-config", help="Write config.yaml as a config/current doc for the Artifact frontend")
