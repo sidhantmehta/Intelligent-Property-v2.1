@@ -244,13 +244,13 @@
     <div>
       <div class="card">
         <h2>Amenity weights</h2>
-        <div class="hint">Higher weight = matters more to the total score.</div>
+        <div class="hint">Higher weight = matters more to the total score. Scores update instantly as you type — no save or re-run needed for weight changes alone.</div>
         <div id="categoryFields" style="margin-top:10px;"></div>
       </div>
 
       <div class="card">
         <h2>Reference points</h2>
-        <div class="hint">Outcodes are scored on travel time to each of these.</div>
+        <div class="hint">Outcodes are scored on travel time to each of these. Weight edits update instantly; adding a point, renaming one, or changing its address needs "Save settings" plus an actual model run to fetch its travel times.</div>
         <div id="referenceFields" style="margin-top:10px;"></div>
         <button class="btn" id="addRefBtn" type="button" style="width:100%;">+ Add reference point</button>
       </div>
@@ -409,6 +409,87 @@
     var idx = list.findIndex(function (o) { return o.outcode === outcode; });
     if (idx === -1) return state.currentPage;
     return Math.floor(idx / Number(state.pageSize)) + 1;
+  }
+
+  // Mirrors geo_model/domain/scoring.py's _min_max_normalize: 0-1 across
+  // the given (outcode, value) pairs, flipped when lower is better (e.g.
+  // travel-time minutes). All-equal inputs normalize to 1.0 for everyone,
+  // same as the backend.
+  function minMaxNormalize(pairs, higherIsBetter) {
+    var out = {};
+    if (!pairs.length) return out;
+    var lo = Infinity, hi = -Infinity;
+    pairs.forEach(function (p) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; });
+    var flat = Math.abs(hi - lo) < 1e-9;
+    pairs.forEach(function (p) {
+      if (flat) { out[p.outcode] = 1.0; return; }
+      var n = (p.value - lo) / (hi - lo);
+      out[p.outcode] = higherIsBetter ? n : 1.0 - n;
+    });
+    return out;
+  }
+
+  // Recomputes normalized_score/total_score for every loaded outcode from
+  // the raw_score values already embedded in each doc, using the CURRENT
+  // state.config weights -- the same blend geo_model/domain/scoring.py's
+  // score_outcodes() does, just run client-side. This is what lets a
+  // weight edit update the table instantly, with no model re-run: raw
+  // amenity distances and travel-time minutes don't depend on weight, only
+  // the final blend does. Adding a brand-new category/reference point (no
+  // raw_score anywhere yet) or changing radius bins still needs a real
+  // run -- those change what raw_score means, which this can't invent.
+  function recomputeScores() {
+    var cfg = state.config || DEFAULT_CONFIG;
+    var outcodes = state.outcodes;
+    if (!outcodes.length) return;
+
+    var catWeights = (cfg.amenity_categories || []).map(function (c) {
+      return { key: c.key, weight: Number(c.weight) || 0 };
+    });
+    var refWeights = (cfg.reference_points || []).map(function (r) {
+      return { key: travelKey(r.name), weight: Number(r.weight) || 0 };
+    });
+    var allWeights = catWeights.concat(refWeights);
+    var totalWeight = allWeights.reduce(function (s, w) { return s + w.weight; }, 0);
+
+    var normalizedByKey = {};
+
+    catWeights.forEach(function (cw) {
+      var pairs = outcodes.map(function (o) {
+        var cell = o.categories && o.categories[cw.key];
+        return { outcode: o.outcode, value: cell ? cell.raw_score : 0 };
+      });
+      normalizedByKey[cw.key] = minMaxNormalize(pairs, true);
+    });
+
+    refWeights.forEach(function (rw) {
+      var known = [];
+      outcodes.forEach(function (o) {
+        var cell = o.categories && o.categories[rw.key];
+        var raw = cell ? cell.raw_score : -1;
+        if (raw != null && raw >= 0) known.push({ outcode: o.outcode, value: raw });
+      });
+      var normKnown = minMaxNormalize(known, false);
+      var norm = {};
+      outcodes.forEach(function (o) {
+        norm[o.outcode] = normKnown.hasOwnProperty(o.outcode) ? normKnown[o.outcode] : 0.0;
+      });
+      normalizedByKey[rw.key] = norm;
+    });
+
+    outcodes.forEach(function (o) {
+      if (!o.categories) o.categories = {};
+      var weightedSum = 0;
+      allWeights.forEach(function (w) {
+        var byOutcode = normalizedByKey[w.key] || {};
+        var n = byOutcode.hasOwnProperty(o.outcode) ? byOutcode[o.outcode] : 0;
+        if (!o.categories[w.key]) o.categories[w.key] = { raw_score: 0 };
+        o.categories[w.key].normalized_score = n;
+        o.categories[w.key].weight_applied = w.weight;
+        weightedSum += n * w.weight;
+      });
+      o.total_score = totalWeight > 0 ? weightedSum / totalWeight : 0;
+    });
   }
 
   // ---------------- rendering: header pill / banner ----------------
@@ -986,6 +1067,7 @@
   function subscribeDb(db) {
     db.doc("config/current").onSnapshot(function (snap) {
       state.config = snap.exists ? snap.data() : DEFAULT_CONFIG;
+      recomputeScores();
       renderSettings();
       renderFilters();
       renderTableHead();
@@ -1000,6 +1082,7 @@
 
     db.collection("results/latest/outcodes").limit(1000).onSnapshot(function (snap) {
       state.outcodes = outcodesFromSnapshot(snap);
+      recomputeScores();
       renderStatus();
       renderMap();
       renderTable();
@@ -1022,7 +1105,12 @@
 
     document.getElementById("resetBtn").addEventListener("click", function () {
       state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+      recomputeScores();
       renderSettings();
+      renderFilters();
+      renderTableHead();
+      renderTable();
+      renderMap();
       document.getElementById("saveStatus").textContent = "Reverted locally — click “Save settings” to keep it.";
     });
 
@@ -1031,6 +1119,10 @@
       cfg.reference_points.push({ name: "New destination", address: "", weight: 5 });
       state.config = cfg;
       renderSettings();
+      renderFilters();
+      renderTableHead();
+      renderTable();
+      renderMap();
     });
 
     document.getElementById("referenceFields").addEventListener("click", function (ev) {
@@ -1038,8 +1130,28 @@
       var cfg = readFormIntoConfig();
       cfg.reference_points.splice(Number(ev.target.dataset.idx), 1);
       state.config = cfg;
+      recomputeScores();
       renderSettings();
+      renderFilters();
+      renderTableHead();
+      renderTable();
+      renderMap();
     });
+
+    // Weight edits recompute normalized/total scores instantly from the
+    // raw_score data already loaded -- no save, no model re-run needed.
+    // Name/address edits and add/remove don't retrigger this (there's no
+    // raw travel-time data for a point that hasn't been run yet), so those
+    // still need "Save settings" + an actual model run.
+    function handleWeightInput(ev) {
+      if (ev.target.dataset.field !== "weight") return;
+      state.config = readFormIntoConfig();
+      recomputeScores();
+      renderTable();
+      renderMap();
+    }
+    document.getElementById("categoryFields").addEventListener("input", handleWeightInput);
+    document.getElementById("referenceFields").addEventListener("input", handleWeightInput);
 
     document.getElementById("copyBtn").addEventListener("click", function () {
       var ta = document.getElementById("howtoText");
