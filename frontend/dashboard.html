@@ -397,6 +397,20 @@
     return { slice: list.slice(start, start + size), totalPages: totalPages, start: start };
   }
 
+  // Filtered + sorted, but not yet paginated -- the set of outcodes that
+  // should currently be visible in both the table and the map, so the two
+  // views never disagree about which outcodes are "in view".
+  function visibleOutcodes() {
+    return sortedOutcodes(applyFilters(state.outcodes));
+  }
+
+  function pageForOutcode(outcode, list) {
+    if (state.pageSize === "all") return 1;
+    var idx = list.findIndex(function (o) { return o.outcode === outcode; });
+    if (idx === -1) return state.currentPage;
+    return Math.floor(idx / Number(state.pageSize)) + 1;
+  }
+
   // ---------------- rendering: header pill / banner ----------------
   function renderStatus() {
     var pill = document.getElementById("runPill");
@@ -439,7 +453,23 @@
     var ns = "http://www.w3.org/2000/svg";
     drawLand(svg, ns, project);
     drawGraticule(svg, ns, W, H, PAD, minLat, maxLat, minLong, maxLong, project);
-    state.outcodes.forEach(function (o) {
+
+    // Only plot outcodes that pass the table's current filters, so the map
+    // and table always agree on what's "in view" -- but keep the
+    // projection anchored to the full unfiltered set (computed above) so
+    // the land/graticule don't jump around as filters change.
+    var visible = visibleOutcodes();
+    if (!visible.length) {
+      var note = document.createElementNS(ns, "text");
+      note.setAttribute("x", "50%"); note.setAttribute("y", "50%");
+      note.setAttribute("text-anchor", "middle"); note.setAttribute("fill", "#8a939c"); note.setAttribute("font-size", "13");
+      note.textContent = "No outcodes match the current filters";
+      svg.appendChild(note);
+      return;
+    }
+
+    var activeDot = null;
+    visible.forEach(function (o) {
       var xy = project(o);
       var c = document.createElementNS(ns, "circle");
       c.setAttribute("cx", xy[0].toFixed(1));
@@ -453,7 +483,11 @@
       c.addEventListener("mouseleave", hideTooltip);
       c.addEventListener("click", function () { setActive(o.outcode, true); });
       svg.appendChild(c);
+      if (o.outcode === state.activeOutcode) activeDot = c;
     });
+    // Re-append the active dot last so it paints on top of every other
+    // marker, including ones it visually overlaps.
+    if (activeDot) svg.appendChild(activeDot);
   }
 
   function niceStep(span, targetCount) {
@@ -611,11 +645,13 @@
         state.currentPage = 1;
         renderFilters();
         renderTable();
+        renderMap();
       } else if (ev.target.classList.contains("remove")) {
         state.filters.splice(Number(ev.target.dataset.idx), 1);
         state.currentPage = 1;
         renderFilters();
         renderTable();
+        renderMap();
       }
     });
     bar.addEventListener("change", function (ev) {
@@ -627,6 +663,7 @@
       f[field] = field === "value" ? ev.target.value : ev.target.value;
       state.currentPage = 1;
       renderTable();
+      renderMap();
     });
   }
 
@@ -736,8 +773,7 @@
       return;
     }
 
-    var filtered = applyFilters(state.outcodes);
-    var sorted = sortedOutcodes(filtered);
+    var sorted = visibleOutcodes();
 
     if (!sorted.length) {
       var tr2 = document.createElement("tr");
@@ -869,6 +905,9 @@
 
   function setActive(outcode, fromMap) {
     state.activeOutcode = outcode;
+    if (fromMap) {
+      state.currentPage = pageForOutcode(outcode, visibleOutcodes());
+    }
     renderMap();
     renderTable();
     if (!fromMap) {
