@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from geo_model.config import ModelConfig, load_model_config
 from geo_model.data.db import get_session
-from geo_model.data.models import Amenity, Outcode, RunConfig, RunResult
+from geo_model.data.models import Amenity, Outcode, PostcodeSector, RunConfig, RunResult, SectorPrice
 from geo_model.domain import scoring
 
 # How many of the nearest amenities to embed per outcode/category in the
@@ -80,29 +80,39 @@ def export_config_doc(path: Path) -> dict:
     return doc
 
 
+def sector_doc_id(sector: str) -> str:
+    """A postcode sector like "SW11 1" isn't a valid `db` document id
+    (space isn't in the allowed id character set) -- this is the sanitized
+    id used for its doc/filename, while the doc's own ``sector`` field
+    keeps the real, spaced value."""
+    return sector.replace(" ", "_")
+
+
 def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_example: bool = False) -> dict:
     """Writes ``out_dir/latest.json`` (the results/latest metadata doc),
-    one ``out_dir/outcodes/<outcode>.json`` per outcode (each a
-    results/latest/outcodes/<outcode> doc), and one
-    ``out_dir/amenities/<outcode>.json`` per outcode (each a
-    results/latest/amenities/<outcode> doc) for the given run (defaulting
-    to the most recent one in the DB).
+    one ``out_dir/sectors/<sector_id>.json`` per postcode sector (each a
+    results/latest/sectors/<sector_id> doc, the table/map's row grain),
+    and one ``out_dir/amenities/<outcode>.json`` per PARENT outcode (each
+    a results/latest/amenities/<outcode> doc) for the given run
+    (defaulting to the most recent one in the DB).
 
     The amenities drill-down detail is kept in its OWN collection, fetched
     lazily by the frontend only when a viewer expands a cell, rather than
-    embedded in the outcodes doc. Embedding it there once made every
+    embedded in the sector doc. Embedding it there once made every
     outcodes doc ~10x bigger (~1KB -> ~11KB); multiplied across ~700
     outcodes that pushed the ALWAYS-subscribed results/latest/outcodes
     collection's total realtime payload well past what a single
     onSnapshot listener reliably delivers (confirmed: a plain `list` read
     against that collection silently truncated at ~400 of 681 docs despite
     asking for 1000), which is what made the dashboard's table and map go
-    blank. Keeping outcodes docs lean (score + per-category raw/normalized
-    numbers only, no amenity names/distances) is what makes the realtime
-    subscription work reliably again."""
+    blank. Keeping sector docs lean (score + per-category raw/normalized
+    numbers + price, no amenity names/distances) is what makes the
+    realtime subscription work reliably again -- amenities stay keyed by
+    the shared PARENT outcode (not duplicated per sector), so this
+    collection is still one doc per outcode (~700), not per sector."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    outcodes_dir = out_dir / "outcodes"
-    outcodes_dir.mkdir(parents=True, exist_ok=True)
+    sectors_dir = out_dir / "sectors"
+    sectors_dir.mkdir(parents=True, exist_ok=True)
     amenities_dir = out_dir / "amenities"
     amenities_dir.mkdir(parents=True, exist_ok=True)
 
@@ -151,10 +161,29 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "s": round(scoring.radius_weight(distance_miles, radius_bins), 3),
             })
 
-        outcode_docs = []
+        for outcode in outcode_rows:
+            amenities_doc = {"outcode": outcode, "amenities": amenities_by_outcode.get(outcode, {})}
+            (amenities_dir / f"{outcode}.json").write_text(json.dumps(amenities_doc))
+
+        sectors_in_scope = [r.sector for r in results if r.sector]
+        sector_rows = {
+            s.sector: s
+            for s in session.scalars(select(PostcodeSector).where(PostcodeSector.sector.in_(sectors_in_scope)))
+        }
+        price_rows = list(session.scalars(select(SectorPrice).where(SectorPrice.sector.in_(sectors_in_scope))))
+        prices_by_sector: dict[str, dict[str, dict]] = {}
+        for p in price_rows:
+            prices_by_sector.setdefault(p.sector, {})[p.property_type] = {
+                "median_price": p.median_price,
+                "transaction_count": p.transaction_count,
+                "grain": p.estimate_grain,
+            }
+
+        sector_docs = []
         for r in results:
             o = outcode_rows.get(r.outcode)
-            if o is None:
+            ps = sector_rows.get(r.sector) if r.sector else None
+            if o is None or ps is None:
                 continue
             categories = {
                 c.category_key: {
@@ -165,32 +194,32 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 for c in r.categories
             }
             doc = {
+                "sector": r.sector,
                 "outcode": r.outcode,
-                "lat": o.lat,
-                "long": o.long,
+                "lat": ps.lat,
+                "long": ps.long,
                 "total_score": r.total_score,
                 "categories": categories,
                 "borough": o.borough,
                 "geo_group": o.geo_group,
+                "prices": prices_by_sector.get(r.sector, {}),
             }
-            (outcodes_dir / f"{r.outcode}.json").write_text(json.dumps(doc))
-            outcode_docs.append(doc)
-
-            amenities_doc = {"outcode": r.outcode, "amenities": amenities_by_outcode.get(r.outcode, {})}
-            (amenities_dir / f"{r.outcode}.json").write_text(json.dumps(amenities_doc))
+            (sectors_dir / f"{sector_doc_id(r.sector)}.json").write_text(json.dumps(doc))
+            sector_docs.append(doc)
 
         meta = {
             "run_id": run_config.id,
             "created_at": run_config.created_at.isoformat(),
-            "outcode_count": len(outcode_docs),
+            "outcode_count": len(outcode_rows),
+            "sector_count": len(sector_docs),
             "is_example": is_example,
         }
         (out_dir / "latest.json").write_text(json.dumps(meta, indent=2))
 
     return {
         "meta": meta,
-        "outcode_count": len(outcode_docs),
-        "outcodes_dir": str(outcodes_dir),
+        "sector_count": len(sector_docs),
+        "sectors_dir": str(sectors_dir),
         "amenities_dir": str(amenities_dir),
     }
 

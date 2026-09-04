@@ -1,4 +1,4 @@
-<title>Outcode Desirability</title>
+<title>Sector Desirability</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
@@ -165,7 +165,7 @@
   tbody tr:hover { background: var(--surface-2); }
   tbody tr.active { outline: 2px solid var(--accent); outline-offset: -2px; }
   td.outcode { font-family: var(--font-mono); font-weight: 600; }
-  td.score { font-family: var(--font-mono); font-weight: 700; }
+  td.score, td.price { font-family: var(--font-mono); font-weight: 700; }
   td.cell { font-family: var(--font-mono); border-radius: 4px; text-align: right; cursor: pointer; }
   td.cell.zero-weight { opacity: .5; font-style: italic; }
 
@@ -219,8 +219,8 @@
 <div class="wrap">
   <div class="topbar">
     <div>
-      <h1>Outcode Desirability</h1>
-      <div class="sub">Geographic amenity &amp; commute scoring for UK postcode outcodes</div>
+      <h1>Sector Desirability</h1>
+      <div class="sub">Geographic amenity, commute &amp; price scoring for UK postcode sectors</div>
     </div>
     <span class="pill" id="runPill"><span class="dot"></span><span id="runPillText">Loading…</span></span>
   </div>
@@ -234,7 +234,7 @@
     <div>
       <div class="card" id="mapCard">
         <h2>Map</h2>
-        <div class="hint" id="mapHint">Positioned by outcode centroid, coloured by total score. Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.</div>
+        <div class="hint" id="mapHint">Positioned by sector centroid, coloured by total score. Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.</div>
         <div class="map-wrap" style="margin-top:10px;">
           <svg id="mapSvg" viewBox="0 0 640 520" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="map-tooltip" id="mapTooltip"></div>
@@ -256,8 +256,8 @@
       </div>
 
       <div class="card">
-        <h2>Scores by outcode</h2>
-        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given outcode at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total.</div>
+        <h2>Scores by postcode sector</h2>
+        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below; a "*" means the sector had too few sales and the outcode-level estimate was used instead.</div>
         <div class="btn-row" id="presetBar" style="margin-top:10px;">
           <button class="btn" id="presetHomeCounties" type="button">Preset: &lt;60 min to Zig Zag + Home Counties</button>
           <button class="btn" id="presetGrammar" type="button">Preset: &lt;60 min to Zig Zag + grammar score &gt;1</button>
@@ -270,6 +270,13 @@
             <option value="Inner London">Inner London</option>
             <option value="Greater London">Greater London</option>
             <option value="Home Counties">Home Counties</option>
+          </select>
+          <label for="propertyTypeSelect" style="font-size:12px;color:var(--ink-2);margin-left:8px;">Price for</label>
+          <select id="propertyTypeSelect">
+            <option value="F">Flat</option>
+            <option value="T">Terraced</option>
+            <option value="S">Semi-detached</option>
+            <option value="D">Detached</option>
           </select>
         </div>
         <div class="filter-bar" id="filterBar" style="margin-top:10px;"></div>
@@ -292,7 +299,7 @@
 
       <div class="card">
         <h2>Reference points</h2>
-        <div class="hint">Outcodes are scored on travel time to each of these. Weight edits update instantly; adding a point, renaming one, or changing its address needs "Save settings" plus an actual model run to fetch its travel times.</div>
+        <div class="hint">Sectors are scored on travel time to each of these. Weight edits update instantly; adding a point, renaming one, or changing its address needs "Save settings" plus an actual model run to fetch its travel times.</div>
         <div id="referenceFields" style="margin-top:10px;"></div>
         <button class="btn" id="addRefBtn" type="button" style="width:100%;">+ Add reference point</button>
       </div>
@@ -370,21 +377,22 @@
     db: null,
     config: null,
     resultsMeta: null,
-    outcodes: [],
+    sectors: [],
     sortKey: "total_score",
     sortDir: "desc",
-    activeOutcode: null,
+    activeSector: null,
     filters: [],
     pageSize: 50,
     currentPage: 1,
-    drillOutcode: null,
+    drillSector: null,
     drillCategory: null,
     amenitiesCache: {},
-    outcodesError: null,
+    sectorsError: null,
     labels: [],
     mapView: null,
     colorBy: "total_score",
-    geoGroupFilter: "All"
+    geoGroupFilter: "All",
+    propertyType: "F"
   };
 
   var FILTER_OPS = [
@@ -397,17 +405,32 @@
   var PAGE_SIZES = [25, 50, 100, "all"];
 
   // Columns that always appear, before the configurable amenity/travel
-  // ones -- Outcode/Borough/Group are plain strings (sortable, not
-  // filterable via the numeric filter bar); Total is numeric like the
-  // rest.
+  // ones -- Sector/Outcode/Borough/Group are plain strings (sortable, not
+  // filterable via the numeric filter bar); Price and Total are numeric.
+  // Price shows the median for state.propertyType (the Settings > "Price
+  // for" selector), estimated per postcode sector with an outcode-level
+  // backoff for sparse sectors -- see geo_model.domain.pricing.
   var FIXED_COLUMNS = [
+    { key: "sector", label: "Sector" },
     { key: "outcode", label: "Outcode" },
     { key: "borough", label: "Borough" },
     { key: "geo_group", label: "Group" },
+    { key: "price", label: "Price" },
     { key: "total_score", label: "Total" }
   ];
 
   function travelKey(name) { return "travel_time::" + name; }
+
+  function priceValue(o) {
+    var p = o.prices && o.prices[state.propertyType];
+    return (p && p.median_price != null) ? p.median_price : null;
+  }
+
+  function formatPrice(n) {
+    if (n == null) return "–";
+    if (n >= 1000000) return "£" + (n / 1000000).toFixed(2) + "M";
+    return "£" + Math.round(n / 1000) + "k";
+  }
 
   function columns() {
     var cols = [];
@@ -467,13 +490,13 @@
   // Filtered + sorted, but not yet paginated -- the set of outcodes that
   // should currently be visible in both the table and the map, so the two
   // views never disagree about which outcodes are "in view".
-  function visibleOutcodes() {
-    return sortedOutcodes(applyFilters(state.outcodes));
+  function visibleSectors() {
+    return sortedSectors(applyFilters(state.sectors));
   }
 
-  function pageForOutcode(outcode, list) {
+  function pageForSector(sector, list) {
     if (state.pageSize === "all") return 1;
-    var idx = list.findIndex(function (o) { return o.outcode === outcode; });
+    var idx = list.findIndex(function (o) { return o.sector === sector; });
     if (idx === -1) return state.currentPage;
     return Math.floor(idx / Number(state.pageSize)) + 1;
   }
@@ -489,9 +512,9 @@
     pairs.forEach(function (p) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; });
     var flat = Math.abs(hi - lo) < 1e-9;
     pairs.forEach(function (p) {
-      if (flat) { out[p.outcode] = 1.0; return; }
+      if (flat) { out[p.id] = 1.0; return; }
       var n = (p.value - lo) / (hi - lo);
-      out[p.outcode] = higherIsBetter ? n : 1.0 - n;
+      out[p.id] = higherIsBetter ? n : 1.0 - n;
     });
     return out;
   }
@@ -505,16 +528,22 @@
   // the final blend does. Adding a brand-new category/reference point (no
   // raw_score anywhere yet) or changing radius bins still needs a real
   // run -- those change what raw_score means, which this can't invent.
+  // Mirrors geo_model/domain/scoring.py's score_sectors(): amenity
+  // categories don't vary within an outcode (every sector under one
+  // shares the same raw_score), so they're normalized per OUTCODE --
+  // otherwise an outcode with many sectors would count its identical raw
+  // score once per sector and skew the min/max range. Travel time DOES
+  // vary per sector, so it's normalized per sector row.
   function recomputeScores() {
     var cfg = state.config || DEFAULT_CONFIG;
-    var outcodes = state.outcodes;
-    if (!outcodes.length) return;
+    var sectors = state.sectors;
+    if (!sectors.length) return;
 
     var catWeights = (cfg.amenity_categories || []).map(function (c) {
-      return { key: c.key, weight: Number(c.weight) || 0 };
+      return { key: c.key, weight: Number(c.weight) || 0, grain: "outcode" };
     });
     var refWeights = (cfg.reference_points || []).map(function (r) {
-      return { key: travelKey(r.name), weight: Number(r.weight) || 0 };
+      return { key: travelKey(r.name), weight: Number(r.weight) || 0, grain: "sector" };
     });
     var allWeights = catWeights.concat(refWeights);
     var totalWeight = allWeights.reduce(function (s, w) { return s + w.weight; }, 0);
@@ -522,34 +551,39 @@
     var normalizedByKey = {};
 
     catWeights.forEach(function (cw) {
-      var pairs = outcodes.map(function (o) {
+      var seen = {};
+      var pairs = [];
+      sectors.forEach(function (o) {
+        if (seen[o.outcode]) return;
+        seen[o.outcode] = true;
         var cell = o.categories && o.categories[cw.key];
-        return { outcode: o.outcode, value: cell ? cell.raw_score : 0 };
+        pairs.push({ id: o.outcode, value: cell ? cell.raw_score : 0 });
       });
       normalizedByKey[cw.key] = minMaxNormalize(pairs, true);
     });
 
     refWeights.forEach(function (rw) {
       var known = [];
-      outcodes.forEach(function (o) {
+      sectors.forEach(function (o) {
         var cell = o.categories && o.categories[rw.key];
         var raw = cell ? cell.raw_score : -1;
-        if (raw != null && raw >= 0) known.push({ outcode: o.outcode, value: raw });
+        if (raw != null && raw >= 0) known.push({ id: o.sector, value: raw });
       });
       var normKnown = minMaxNormalize(known, false);
       var norm = {};
-      outcodes.forEach(function (o) {
-        norm[o.outcode] = normKnown.hasOwnProperty(o.outcode) ? normKnown[o.outcode] : 0.0;
+      sectors.forEach(function (o) {
+        norm[o.sector] = normKnown.hasOwnProperty(o.sector) ? normKnown[o.sector] : 0.0;
       });
       normalizedByKey[rw.key] = norm;
     });
 
-    outcodes.forEach(function (o) {
+    sectors.forEach(function (o) {
       if (!o.categories) o.categories = {};
       var weightedSum = 0;
       allWeights.forEach(function (w) {
-        var byOutcode = normalizedByKey[w.key] || {};
-        var n = byOutcode.hasOwnProperty(o.outcode) ? byOutcode[o.outcode] : 0;
+        var byId = normalizedByKey[w.key] || {};
+        var lookupId = w.grain === "sector" ? o.sector : o.outcode;
+        var n = byId.hasOwnProperty(lookupId) ? byId[lookupId] : 0;
         if (!o.categories[w.key]) o.categories[w.key] = { raw_score: 0 };
         o.categories[w.key].normalized_score = n;
         o.categories[w.key].weight_applied = w.weight;
@@ -572,12 +606,12 @@
     }
     var when = state.resultsMeta.created_at ? new Date(state.resultsMeta.created_at) : null;
     var whenStr = when ? when.toLocaleString() : "unknown time";
-    if (state.outcodesError) {
-      text.textContent = "Couldn't load outcodes (" + state.outcodesError + ")";
+    if (state.sectorsError) {
+      text.textContent = "Couldn't load results (" + state.sectorsError + ")";
     } else {
-      text.textContent = (state.outcodes.length) + " outcodes · " + whenStr;
+      text.textContent = (state.sectors.length) + " sectors · " + whenStr;
     }
-    pill.classList.toggle("example", !!state.resultsMeta.is_example || !!state.outcodesError);
+    pill.classList.toggle("example", !!state.resultsMeta.is_example || !!state.sectorsError);
     banner.hidden = !state.resultsMeta.is_example;
   }
 
@@ -597,8 +631,8 @@
   // zoom-out can't exceed. Independent of state.mapView (which tracks
   // the current zoom/pan on top of this).
   function fullMapBounds() {
-    var lats = state.outcodes.map(function (o) { return o.lat; });
-    var longs = state.outcodes.map(function (o) { return o.long; });
+    var lats = state.sectors.map(function (o) { return o.lat; });
+    var longs = state.sectors.map(function (o) { return o.long; });
     var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
     var minLong = Math.min.apply(null, longs), maxLong = Math.max.apply(null, longs);
     return {
@@ -674,8 +708,8 @@
   function renderMap() {
     var svg = document.getElementById("mapSvg");
     svg.innerHTML = "";
-    if (!state.outcodes.length) {
-      var emptyMsg = state.outcodesError ? ("Couldn't load results: " + state.outcodesError) : "No results to plot yet";
+    if (!state.sectors.length) {
+      var emptyMsg = state.sectorsError ? ("Couldn't load results: " + state.sectorsError) : "No results to plot yet";
       svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' + escapeHtml(emptyMsg) + '</text>';
       return;
     }
@@ -695,12 +729,12 @@
     // and table always agree on what's "in view" -- but keep the
     // projection anchored to the full unfiltered set (computed above) so
     // the land/graticule don't jump around as filters change.
-    var visible = visibleOutcodes();
+    var visible = visibleSectors();
     if (!visible.length) {
       var note = document.createElementNS(ns, "text");
       note.setAttribute("x", "50%"); note.setAttribute("y", "50%");
       note.setAttribute("text-anchor", "middle"); note.setAttribute("fill", "#8a939c"); note.setAttribute("font-size", "13");
-      note.textContent = "No outcodes match the current filters";
+      note.textContent = "No sectors match the current filters";
       svg.appendChild(note);
       return;
     }
@@ -711,16 +745,16 @@
       var c = document.createElementNS(ns, "circle");
       c.setAttribute("cx", xy[0].toFixed(1));
       c.setAttribute("cy", xy[1].toFixed(1));
-      c.setAttribute("r", o.outcode === state.activeOutcode ? 8 : 6);
+      c.setAttribute("r", o.sector === state.activeSector ? 8 : 6);
       c.setAttribute("fill", rampColor(colorValue(o, state.colorBy)));
-      c.setAttribute("class", "map-dot" + (o.outcode === state.activeOutcode ? " active" : ""));
-      c.dataset.outcode = o.outcode;
+      c.setAttribute("class", "map-dot" + (o.sector === state.activeSector ? " active" : ""));
+      c.dataset.sector = o.sector;
       c.addEventListener("mouseenter", function (ev) { showTooltip(ev, o); });
       c.addEventListener("mousemove", function (ev) { moveTooltip(ev); });
       c.addEventListener("mouseleave", hideTooltip);
-      c.addEventListener("click", function () { setActive(o.outcode, true); });
+      c.addEventListener("click", function () { setActive(o.sector, true); });
       svg.appendChild(c);
-      if (o.outcode === state.activeOutcode) activeDot = c;
+      if (o.sector === state.activeSector) activeDot = c;
     });
     // Re-append the active dot last so it paints on top of every other
     // marker, including ones it visually overlaps.
@@ -802,7 +836,7 @@
 
   function showTooltip(ev, o) {
     var tip = document.getElementById("mapTooltip");
-    var text = o.outcode + " · total " + o.total_score.toFixed(3);
+    var text = o.sector + " · total " + o.total_score.toFixed(3);
     if (state.colorBy !== "total_score") {
       var label = (filterableColumns().find(function (c) { return c.key === state.colorBy; }) || {}).label || state.colorBy;
       text += " · " + label + " " + colorValue(o, state.colorBy).toFixed(3);
@@ -828,7 +862,7 @@
     var hint = document.getElementById("mapHint");
     if (!hint) return;
     var label = (filterableColumns().find(function (c) { return c.key === state.colorBy; }) || {}).label || "total score";
-    hint.textContent = "Positioned by outcode centroid, coloured by " + label.toLowerCase() +
+    hint.textContent = "Positioned by sector centroid, coloured by " + label.toLowerCase() +
       ". Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.";
   }
 
@@ -862,7 +896,7 @@
     var svg = document.getElementById("mapSvg");
 
     svg.addEventListener("wheel", function (ev) {
-      if (!state.outcodes.length) return;
+      if (!state.sectors.length) return;
       ev.preventDefault();
       var rect = svg.getBoundingClientRect();
       var svgX = (ev.clientX - rect.left) / rect.width * MAP_W;
@@ -873,7 +907,7 @@
 
     var dragging = false, dragLastX = 0, dragLastY = 0;
     svg.addEventListener("mousedown", function (ev) {
-      if (!state.outcodes.length) return;
+      if (!state.sectors.length) return;
       dragging = true;
       dragLastX = ev.clientX; dragLastY = ev.clientY;
       svg.classList.add("dragging");
@@ -891,16 +925,20 @@
   }
 
   // ---------------- rendering: table ----------------
-  function sortedOutcodes(list) {
+  function sortedSectors(list) {
     list = list.slice();
     var key = state.sortKey, dir = state.sortDir === "asc" ? 1 : -1;
     list.sort(function (a, b) {
       var av, bv;
-      if (key === "outcode" || key === "borough" || key === "geo_group") {
+      if (key === "sector" || key === "outcode" || key === "borough" || key === "geo_group") {
         av = a[key] || ""; bv = b[key] || "";
         return dir * av.localeCompare(bv);
       }
       if (key === "total_score") { av = a.total_score; bv = b.total_score; }
+      else if (key === "price") {
+        av = priceValue(a); bv = priceValue(b);
+        av = av == null ? -1 : av; bv = bv == null ? -1 : bv;
+      }
       else {
         av = (a.categories[key] || {}).normalized_score;
         bv = (b.categories[key] || {}).normalized_score;
@@ -915,6 +953,8 @@
   function renderFilters() {
     var groupSelect = document.getElementById("geoGroupSelect");
     if (groupSelect) groupSelect.value = state.geoGroupFilter;
+    var propertyTypeSelect = document.getElementById("propertyTypeSelect");
+    if (propertyTypeSelect) propertyTypeSelect.value = state.propertyType;
     var bar = document.getElementById("filterBar");
     bar.innerHTML = "";
     var cols = filterableColumns();
@@ -964,7 +1004,7 @@
     if (!state.filters.length) {
       var hint = document.createElement("span");
       hint.className = "filter-empty";
-      hint.textContent = "No filters — showing every outcode.";
+      hint.textContent = "No filters — showing every sector.";
       addRow.appendChild(hint);
     }
     bar.appendChild(addRow);
@@ -1008,6 +1048,11 @@
       renderMap();
     });
 
+    document.getElementById("propertyTypeSelect").addEventListener("change", function (ev) {
+      state.propertyType = ev.target.value;
+      renderTable();
+    });
+
     function applyPreset(filters, geoGroupFilter) {
       state.filters = filters;
       state.geoGroupFilter = geoGroupFilter;
@@ -1042,7 +1087,7 @@
 
     var rangeText = document.createElement("span");
     if (state.pageSize === "all") {
-      rangeText.textContent = "Showing all " + total + " outcodes";
+      rangeText.textContent = "Showing all " + total + " sectors";
     } else {
       var from = total === 0 ? 0 : pag.start + 1;
       var to = Math.min(pag.start + pag.slice.length, total);
@@ -1128,11 +1173,11 @@
     var cols = columns();
     var body = document.getElementById("tableBody");
     body.innerHTML = "";
-    if (!state.outcodes.length) {
+    if (!state.sectors.length) {
       var tr = document.createElement("tr");
       var td = document.createElement("td");
       td.colSpan = cols.length + FIXED_COLUMNS.length;
-      td.textContent = state.outcodesError ? ("Couldn't load results: " + state.outcodesError) : "No results yet.";
+      td.textContent = state.sectorsError ? ("Couldn't load results: " + state.sectorsError) : "No results yet.";
       td.style.color = "var(--muted)";
       tr.appendChild(td);
       body.appendChild(tr);
@@ -1140,13 +1185,13 @@
       return;
     }
 
-    var sorted = visibleOutcodes();
+    var sorted = visibleSectors();
 
     if (!sorted.length) {
       var tr2 = document.createElement("tr");
       var td2 = document.createElement("td");
       td2.colSpan = cols.length + FIXED_COLUMNS.length;
-      td2.textContent = "No outcodes match the current filters.";
+      td2.textContent = "No sectors match the current filters.";
       td2.style.color = "var(--muted)";
       tr2.appendChild(td2);
       body.appendChild(tr2);
@@ -1159,11 +1204,15 @@
 
     pag.slice.forEach(function (o) {
       var tr = document.createElement("tr");
-      tr.className = o.outcode === state.activeOutcode ? "active" : "";
-      tr.addEventListener("click", function () { setActive(o.outcode, false); });
+      tr.className = o.sector === state.activeSector ? "active" : "";
+      tr.addEventListener("click", function () { setActive(o.sector, false); });
+
+      var tdSector = document.createElement("td");
+      tdSector.className = "outcode"; tdSector.textContent = o.sector;
+      tr.appendChild(tdSector);
 
       var tdOut = document.createElement("td");
-      tdOut.className = "outcode"; tdOut.textContent = o.outcode;
+      tdOut.textContent = o.outcode;
       tr.appendChild(tdOut);
 
       var tdBorough = document.createElement("td");
@@ -1173,6 +1222,20 @@
       var tdGroup = document.createElement("td");
       tdGroup.textContent = o.geo_group || "–";
       tr.appendChild(tdGroup);
+
+      var tdPrice = document.createElement("td");
+      tdPrice.className = "price";
+      var priceInfo = o.prices && o.prices[state.propertyType];
+      if (priceInfo && priceInfo.median_price != null) {
+        tdPrice.textContent = formatPrice(priceInfo.median_price) + (priceInfo.grain === "outcode" ? " *" : "");
+        tdPrice.title = (priceInfo.grain === "outcode"
+          ? "Sector had too few sales — backed off to the outcode-level estimate. "
+          : "") + priceInfo.transaction_count + " comparable sale(s) used.";
+      } else {
+        tdPrice.textContent = "–";
+        tdPrice.title = "No price data for this property type.";
+      }
+      tr.appendChild(tdPrice);
 
       var tdScore = document.createElement("td");
       tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);
@@ -1199,14 +1262,14 @@
         }
         td.addEventListener("click", function (ev) {
           ev.stopPropagation();
-          toggleDrilldown(o.outcode, c.key);
-          setActive(o.outcode, false);
+          toggleDrilldown(o.sector, o.outcode, c.key);
+          setActive(o.sector, false);
         });
         tr.appendChild(td);
       });
       body.appendChild(tr);
 
-      if (state.drillOutcode === o.outcode) {
+      if (state.drillSector === o.sector) {
         var drillCol = cols.find(function (cc) { return cc.key === state.drillCategory; });
         if (drillCol) body.appendChild(renderDrillRow(o, drillCol));
       }
@@ -1231,12 +1294,12 @@
     });
   }
 
-  function toggleDrilldown(outcode, categoryKey) {
-    if (state.drillOutcode === outcode && state.drillCategory === categoryKey) {
-      state.drillOutcode = null;
+  function toggleDrilldown(sector, outcode, categoryKey) {
+    if (state.drillSector === sector && state.drillCategory === categoryKey) {
+      state.drillSector = null;
       state.drillCategory = null;
     } else {
-      state.drillOutcode = outcode;
+      state.drillSector = sector;
       state.drillCategory = categoryKey;
       var col = columns().find(function (c) { return c.key === categoryKey; });
       if (col && !col.isTravel) fetchAmenities(outcode);
@@ -1255,12 +1318,12 @@
     var title = document.createElement("div");
     title.className = "drill-title";
     var titleText = document.createElement("span");
-    titleText.textContent = c.label + " — " + o.outcode;
+    titleText.textContent = c.label + " — " + o.sector + " (" + o.outcode + ")";
     var closeBtn = document.createElement("button");
     closeBtn.type = "button"; closeBtn.className = "drill-close"; closeBtn.textContent = "Close ✕";
     closeBtn.addEventListener("click", function (ev) {
       ev.stopPropagation();
-      state.drillOutcode = null;
+      state.drillSector = null;
       state.drillCategory = null;
       renderTable();
     });
@@ -1323,19 +1386,19 @@
     return tr;
   }
 
-  function setActive(outcode, fromMap) {
-    state.activeOutcode = outcode;
+  function setActive(sector, fromMap) {
+    state.activeSector = sector;
     if (fromMap) {
-      state.currentPage = pageForOutcode(outcode, visibleOutcodes());
+      state.currentPage = pageForSector(sector, visibleSectors());
     }
     renderMap();
     renderTable();
     if (!fromMap) {
-      var dot = document.querySelector('.map-dot[data-outcode="' + CSS.escape(outcode) + '"]');
+      var dot = document.querySelector('.map-dot[data-sector="' + CSS.escape(sector) + '"]');
       if (dot) { dot.scrollIntoView && dot.scrollIntoView({ block: "nearest" }); }
     } else {
       var row = Array.prototype.find.call(document.querySelectorAll("#tableBody tr"), function (r) {
-        return r.querySelector(".outcode") && r.querySelector(".outcode").textContent === outcode;
+        return r.querySelector(".outcode") && r.querySelector(".outcode").textContent === sector;
       });
       if (row) row.scrollIntoView({ block: "nearest" });
     }
@@ -1374,10 +1437,10 @@
     });
 
     document.getElementById("howtoText").value =
-      "Read the current settings from the Outcode Desirability artifact's db " +
+      "Read the current settings from the Sector Desirability artifact's db " +
       "(config/current), run scripts/run_model.py against them in the " +
       "Intelligent-Property-v2.1 repo, then write the results back to the " +
-      "artifact's db (results/latest + results/latest/outcodes) so this page updates.";
+      "artifact's db (results/latest + results/latest/sectors) so this page updates.";
   }
 
   function escapeHtml(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
@@ -1404,7 +1467,7 @@
   // place, which throws against a frozen object ("Cannot assign to read
   // only property"). Clone once here so the rest of the app owns
   // ordinary, mutable copies instead of the frozen snapshot objects.
-  function outcodesFromSnapshot(snap) {
+  function sectorsFromSnapshot(snap) {
     return snap.docs.map(function (d) { return d.data(); }).filter(Boolean).map(function (o) {
       return JSON.parse(JSON.stringify(o));
     });
@@ -1435,27 +1498,27 @@
       renderTable();
     } catch (e) {
       console.error("outcomes render error", e);
-      state.outcodesError = "render error: " + (e && e.message ? e.message : String(e));
+      state.sectorsError = "render error: " + (e && e.message ? e.message : String(e));
       try { renderStatus(); } catch (e2) { console.error(e2); }
       try {
         var svg = document.getElementById("mapSvg");
-        if (svg) svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' + escapeHtml(state.outcodesError) + '</text>';
+        if (svg) svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' + escapeHtml(state.sectorsError) + '</text>';
       } catch (e3) { console.error(e3); }
       try {
         var body = document.getElementById("tableBody");
-        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + FIXED_COLUMNS.length) + '" style="color:var(--muted)">' + escapeHtml(state.outcodesError) + '</td></tr>';
+        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + FIXED_COLUMNS.length) + '" style="color:var(--muted)">' + escapeHtml(state.sectorsError) + '</td></tr>';
       } catch (e4) { console.error(e4); }
     }
   }
 
-  function loadOutcodes(db) {
-    db.collection("results/latest/outcodes").limit(1000).get().then(function (snap) {
-      state.outcodes = outcodesFromSnapshot(snap);
-      state.outcodesError = null;
+  function loadSectors(db) {
+    db.collection("results/latest/sectors").limit(3000).get().then(function (snap) {
+      state.sectors = sectorsFromSnapshot(snap);
+      state.sectorsError = null;
       renderOutcodesOrShowError();
     }, function (err) {
       console.error("results outcodes fetch error", err);
-      state.outcodesError = (err && err.code) ? (err.code + (err.message ? ": " + err.message : "")) : "load failed";
+      state.sectorsError = (err && err.code) ? (err.code + (err.message ? ": " + err.message : "")) : "load failed";
       renderStatus();
       renderMap();
       renderTable();
@@ -1486,16 +1549,16 @@
       renderMap();
     }, function (err) { console.error("config snapshot error", err); });
 
-    var outcodesLoaded = false;
+    var sectorsLoaded = false;
     var lastRunId;
     db.doc("results/latest").onSnapshot(function (snap) {
       state.resultsMeta = snap.exists ? snap.data() : null;
       renderStatus();
       var runId = state.resultsMeta && state.resultsMeta.run_id;
-      if (!outcodesLoaded || runId !== lastRunId) {
-        outcodesLoaded = true;
+      if (!sectorsLoaded || runId !== lastRunId) {
+        sectorsLoaded = true;
         lastRunId = runId;
-        loadOutcodes(db);
+        loadSectors(db);
       }
     }, function (err) { console.error("results meta snapshot error", err); });
 
@@ -1516,7 +1579,7 @@
       var status = document.getElementById("saveStatus");
       if (!state.db) { status.textContent = "Can't reload: this view has no database access."; return; }
       status.textContent = "Reloading results…";
-      loadOutcodes(state.db);
+      loadSectors(state.db);
       status.textContent = "Reload requested " + new Date().toLocaleTimeString() + ".";
     });
 
