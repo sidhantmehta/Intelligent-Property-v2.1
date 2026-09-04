@@ -32,15 +32,20 @@ from geo_model.data.models import (
     Amenity,
     ApiUsage,
     GrammarSchool,
+    HpiIndex,
     Outcode,
+    PostcodeSector,
+    PricePaidTransaction,
     PrivateSchool,
     ReferencePoint as ReferencePointRow,
     RunConfig,
     RunResult,
     RunResultCategory,
+    SectorPrice,
+    SectorTravelTime,
     TravelTime,
 )
-from geo_model.domain import geo_cache, scoring
+from geo_model.domain import geo_cache, pricing, scoring
 from geo_model.logging_setup import get_logger, new_run_id, run_logger
 from geo_model.providers.base import GeoPoint, GeoProvider
 from geo_model.providers.here_maps import HereMapsProvider
@@ -112,6 +117,13 @@ def _outcodes_in_scope(session: Session, outcode_filter: list[str] | None) -> li
     stmt = select(Outcode)
     if outcode_filter:
         stmt = stmt.where(Outcode.outcode.in_(outcode_filter))
+    return list(session.scalars(stmt))
+
+
+def _sectors_in_scope(session: Session, outcode_filter: list[str] | None) -> list[PostcodeSector]:
+    stmt = select(PostcodeSector)
+    if outcode_filter:
+        stmt = stmt.where(PostcodeSector.outcode.in_(outcode_filter))
     return list(session.scalars(stmt))
 
 
@@ -263,6 +275,48 @@ def _fetch_and_upsert_travel_times(
     session.commit()
 
 
+def _fetch_and_upsert_sector_travel_times(
+    session: Session,
+    provider: GeoProvider,
+    config: ModelConfig,
+    sectors: list[PostcodeSector],
+    reference_points: dict[str, GeoPoint],
+    keys: list[tuple[str, str]],
+    log,
+) -> None:
+    """Sector-grain counterpart to _fetch_and_upsert_travel_times -- same
+    one-call-per-(unit, reference point) shape, just keyed by sector
+    centroid instead of outcode centroid and written to
+    sector_travel_times instead of travel_times."""
+    sector_by_code = {s.sector: s for s in sectors}
+    for i, (sector, ref_name) in enumerate(keys, start=1):
+        sector_row = sector_by_code.get(sector)
+        destination = reference_points.get(ref_name)
+        if sector_row is None or destination is None:
+            continue
+        origin = GeoPoint(lat=sector_row.lat, long=sector_row.long)
+        try:
+            minutes = provider.travel_time_minutes(origin, destination, config.travel_mode)
+        except Exception as e:
+            log.error("travel_time_minutes failed for sector=%s ref=%s: %s", sector, ref_name, e)
+            continue
+
+        stmt = sqlite_insert(SectorTravelTime).values(
+            sector=sector, reference_point_name=ref_name, mode=config.travel_mode,
+            minutes=minutes, computed_at=dt.datetime.now(dt.timezone.utc),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["sector", "reference_point_name", "mode"],
+            set_={"minutes": minutes, "computed_at": dt.datetime.now(dt.timezone.utc)},
+        )
+        session.execute(stmt)
+        if i % 100 == 0 or i == len(keys):
+            log.info("Sector travel time %d/%d: sector=%s -> %s = %s min", i, len(keys), sector, ref_name, minutes)
+        if i % 25 == 0:
+            session.commit()
+    session.commit()
+
+
 def _persist_usage_log(session: Session, providers: Iterable[GeoProvider], run_id: str, log) -> int:
     """Copies everything each provider recorded during this run into the
     api_usage table, so usage stays queryable/reconcilable against each
@@ -293,6 +347,77 @@ def _persist_usage_log(session: Session, providers: Iterable[GeoProvider], run_i
     return total
 
 
+def compute_sector_prices(outcode_filter: list[str] | None = None) -> dict:
+    """Wires geo_model.domain.pricing to the DB: loads PricePaidTransaction
+    rows within the primary window + the full HpiIndex, computes a
+    HPI-adjusted median price per (sector, property_type) with the
+    outcode-level fallback for sparse cells, and upserts sector_prices.
+    A maintenance step in its own right (like compute_sector_centroids),
+    not part of run_model -- price only needs recomputing when new PPD/HPI
+    data has been ingested, not on every scoring run."""
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+    now = dt.date.today()
+    window_start = now - dt.timedelta(days=pricing.PRIMARY_WINDOW_DAYS)
+
+    with get_session() as session:
+        query = select(PricePaidTransaction).where(PricePaidTransaction.date >= window_start)
+        if outcode_filter:
+            query = query.where(PricePaidTransaction.outcode.in_(outcode_filter))
+        txn_rows = session.scalars(query).all()
+        transactions = [
+            pricing.Transaction(
+                outcode=t.outcode, sector=t.sector, property_type=t.property_type, price=t.price,
+                date=t.date, district=t.district, old_new=t.old_new, ppd_category=t.ppd_category,
+            )
+            for t in txn_rows
+        ]
+        log.info("Loaded %d Price Paid transactions within the %d-day window", len(transactions), pricing.PRIMARY_WINDOW_DAYS)
+
+        hpi_rows = session.scalars(select(HpiIndex)).all()
+        hpi_by_district_month: dict[tuple[str, dt.date], dict[str, float | None]] = {}
+        latest_month = None
+        for h in hpi_rows:
+            hpi_by_district_month[(h.district, h.month)] = {
+                "index_all": h.index_all, "index_detached": h.index_detached,
+                "index_semi": h.index_semi, "index_terraced": h.index_terraced, "index_flat": h.index_flat,
+            }
+            if latest_month is None or h.month > latest_month:
+                latest_month = h.month
+        if latest_month is None:
+            raise RuntimeError("hpi_index is empty -- run `ingest-price-data` first")
+        log.info("Adjusting all prices to %s-equivalent (latest month in hpi_index)", latest_month)
+
+        estimates = pricing.estimate_sector_prices(transactions, hpi_by_district_month, as_of_month=latest_month, now=now)
+
+        for e in estimates:
+            if e.grain == "none":
+                continue
+            stmt = sqlite_insert(SectorPrice).values(
+                sector=e.key, property_type=e.property_type, median_price=e.median_price,
+                transaction_count=e.transaction_count, estimate_grain=e.grain,
+                computed_at=dt.datetime.now(dt.timezone.utc),
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["sector", "property_type"],
+                set_={
+                    "median_price": stmt.excluded.median_price,
+                    "transaction_count": stmt.excluded.transaction_count,
+                    "estimate_grain": stmt.excluded.estimate_grain,
+                    "computed_at": stmt.excluded.computed_at,
+                },
+            )
+            session.execute(stmt)
+        session.commit()
+
+    by_grain: dict[str, int] = {}
+    for e in estimates:
+        by_grain[e.grain] = by_grain.get(e.grain, 0) + 1
+    log.info("compute_sector_prices complete: %d (sector, type) estimates, by grain: %s", len(estimates), by_grain)
+    return {"run_id": run_id, "estimates": len(estimates), "by_grain": by_grain, "as_of_month": latest_month.isoformat()}
+
+
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:
     """Explicit refresh: force-fetches every (outcode, category) pair
     that's missing or older than config.staleness_days, and recomputes
@@ -321,21 +446,30 @@ def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = Non
         log.info("%d/%d (outcode, category) pairs need refresh", len(keys), len(outcodes) * len(category_keys))
         _fetch_and_upsert_amenities(session, provider, config, outcodes, keys, log, provider_cache)
 
-        travel_keys = [(o.outcode, rp.name) for o in outcodes for rp in config.reference_points]
-        _fetch_and_upsert_travel_times(session, provider, config, outcodes, reference_points, travel_keys, log)
+        # Travel time is scored per postcode sector, not per outcode (see
+        # geo_model.domain.pricing's module docstring) -- refreshed for
+        # every sector under an in-scope outcode.
+        sectors = _sectors_in_scope(session, outcode_filter)
+        travel_keys = [(s.sector, rp.name) for s in sectors for rp in config.reference_points]
+        _fetch_and_upsert_sector_travel_times(session, provider, config, sectors, reference_points, travel_keys, log)
 
         _persist_usage_log(session, provider_cache.values(), run_id, log)
 
     elapsed = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()
     log.info("refresh_geo_data complete in %.1fs", elapsed)
-    return {"run_id": run_id, "outcodes": len(outcodes), "amenity_keys_refreshed": len(keys), "elapsed_seconds": elapsed}
+    return {"run_id": run_id, "outcodes": len(outcodes), "sectors": len(sectors), "amenity_keys_refreshed": len(keys), "elapsed_seconds": elapsed}
 
 
 def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:
-    """Scores every in-scope outcode against the given config. Only
+    """Scores every in-scope postcode sector against the given config.
+    Amenities are fetched/cached per outcode and shared by every sector
+    inside it; travel time is fetched/cached per sector (see
+    geo_model.domain.pricing's module docstring for why the split). Only
     fetches geo data / travel times that are fully missing from the
     cache -- use refresh_geo_data() first if you want stale data
-    re-validated."""
+    re-validated. Requires compute_sector_centroids() (and, for price
+    columns to be populated, compute_sector_prices()) to have already
+    been run -- a sector with no centroid can't be scored."""
     ensure_db_ready()
     run_id = new_run_id()
     log = run_logger(__name__, run_id)
@@ -349,8 +483,12 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
         outcodes = _outcodes_in_scope(session, outcode_filter)
         if not outcodes:
             log.error("No outcodes in scope -- has the outcodes table been seeded? (see geo_model.postcodes)")
-            return {"run_id": run_id, "outcodes": 0}
-        log.info("Scope: %d outcodes x %d categories", len(outcodes), len(category_keys))
+            return {"run_id": run_id, "outcodes": 0, "sectors": 0}
+        sectors = _sectors_in_scope(session, outcode_filter)
+        if not sectors:
+            log.error("No postcode sectors in scope -- has compute_sector_centroids() been run?")
+            return {"run_id": run_id, "outcodes": len(outcodes), "sectors": 0}
+        log.info("Scope: %d outcodes (amenities) x %d categories, %d sectors (price/travel time)", len(outcodes), len(category_keys), len(sectors))
 
         reference_points = _ensure_reference_points(session, provider, config, log)
 
@@ -360,15 +498,15 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
         _fetch_and_upsert_amenities(session, provider, config, outcodes, missing_keys, log, provider_cache)
 
         existing_travel = {
-            (tt.outcode, tt.reference_point_name)
-            for tt in session.scalars(select(TravelTime).where(TravelTime.mode == config.travel_mode))
+            (tt.sector, tt.reference_point_name)
+            for tt in session.scalars(select(SectorTravelTime).where(SectorTravelTime.mode == config.travel_mode))
         }
         missing_travel_keys = [
-            (o.outcode, rp.name) for o in outcodes for rp in config.reference_points
-            if (o.outcode, rp.name) not in existing_travel
+            (s.sector, rp.name) for s in sectors for rp in config.reference_points
+            if (s.sector, rp.name) not in existing_travel
         ]
-        log.info("%d outcode<->reference-point travel times are missing and will be fetched now", len(missing_travel_keys))
-        _fetch_and_upsert_travel_times(session, provider, config, outcodes, reference_points, missing_travel_keys, log)
+        log.info("%d sector<->reference-point travel times are missing and will be fetched now", len(missing_travel_keys))
+        _fetch_and_upsert_sector_travel_times(session, provider, config, sectors, reference_points, missing_travel_keys, log)
 
         # --- load everything needed for scoring ---
         amenity_rows = session.scalars(
@@ -385,18 +523,19 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
             amenities.append(scoring.AmenityRecord(outcode=a.outcode, category_key=a.category_key, distance_miles=distance_miles))
 
         travel_rows = session.scalars(
-            select(TravelTime).where(TravelTime.outcode.in_([o.outcode for o in outcodes]), TravelTime.mode == config.travel_mode)
+            select(SectorTravelTime).where(SectorTravelTime.sector.in_([s.sector for s in sectors]), SectorTravelTime.mode == config.travel_mode)
         )
         travel_times = [
-            scoring.TravelTimeRecord(outcode=t.outcode, reference_point_name=t.reference_point_name, minutes=t.minutes)
+            scoring.SectorTravelTimeRecord(sector=t.sector, reference_point_name=t.reference_point_name, minutes=t.minutes)
             for t in travel_rows if t.minutes is not None
         ]
 
         category_weights = [scoring.CategoryWeight(key=c.key, weight=c.weight) for c in config.amenity_categories]
         reference_weights = [scoring.CategoryWeight(key=rp.name, weight=rp.weight) for rp in config.reference_points]
 
-        scores = scoring.score_outcodes(
-            outcodes=[o.outcode for o in outcodes],
+        scores = scoring.score_sectors(
+            sectors=[s.sector for s in sectors],
+            sector_to_outcode={s.sector: s.outcode for s in sectors},
             amenities=amenities,
             category_weights=category_weights,
             radius_bins_miles=list(config.radius_bins_miles),
@@ -414,11 +553,14 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
         session.add(run_config_row)
         session.flush()
 
-        for outcode_score in scores:
-            result_row = RunResult(run_config_id=run_id, outcode=outcode_score.outcode, total_score=outcode_score.total_score)
+        for sector_score in scores:
+            result_row = RunResult(
+                run_config_id=run_id, outcode=sector_score.outcode, sector=sector_score.sector,
+                total_score=sector_score.total_score,
+            )
             session.add(result_row)
             session.flush()
-            for cat_score in outcode_score.categories:
+            for cat_score in sector_score.categories:
                 session.add(
                     RunResultCategory(
                         run_result_id=result_row.id,
@@ -436,9 +578,9 @@ def run_model(config: ModelConfig, outcode_filter: list[str] | None = None) -> d
     top = sorted(scores, key=lambda s: s.total_score, reverse=True)[:5]
     bottom = sorted(scores, key=lambda s: s.total_score)[:5]
     log.info(
-        "run_model complete in %.1fs: %d outcodes scored. top=%s bottom=%s",
+        "run_model complete in %.1fs: %d sectors scored. top=%s bottom=%s",
         elapsed, len(scores),
-        [(s.outcode, round(s.total_score, 3)) for s in top],
-        [(s.outcode, round(s.total_score, 3)) for s in bottom],
+        [(s.sector, round(s.total_score, 3)) for s in top],
+        [(s.sector, round(s.total_score, 3)) for s in bottom],
     )
-    return {"run_id": run_id, "outcodes": len(scores), "elapsed_seconds": elapsed}
+    return {"run_id": run_id, "outcodes": len(outcodes), "sectors": len(scores), "elapsed_seconds": elapsed}

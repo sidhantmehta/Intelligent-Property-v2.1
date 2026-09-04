@@ -99,6 +99,28 @@ class TravelTime(Base):
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SectorTravelTime(Base):
+    """Cached travel time from a postcode sector centroid to a reference
+    point -- the sector-level counterpart to TravelTime, which stays
+    outcode-level and unused by scoring now that travel time is scored per
+    sector (amenities are the only thing still scored at outcode grain;
+    see geo_model.domain.pricing module docstring)."""
+
+    __tablename__ = "sector_travel_times"
+    __table_args__ = (
+        UniqueConstraint("sector", "reference_point_name", "mode", name="uq_sector_travel_time_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector: Mapped[str] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=False, index=True)
+    reference_point_name: Mapped[str] = mapped_column(
+        String(128), ForeignKey("reference_points.name"), nullable=False, index=True
+    )
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class RunConfig(Base):
     """Snapshot of the weights/reference-points/radius-bins config used
     for one model run -- so past runs stay comparable/inspectable even
@@ -116,13 +138,19 @@ class RunConfig(Base):
 
 
 class RunResult(Base):
-    """One outcode's total score for one run."""
+    """One postcode sector's total score for one run (before sector-level
+    scoring, this was one outcode's -- ``outcode`` is kept as the parent
+    outcode, still needed to look up the shared amenity scores; ``sector``
+    is the actual scored unit and what price/travel time are specific to).
+    ``sector`` is nullable only so pre-sector-scoring historical rows keep
+    loading; every row from a sector-aware run_model has it set."""
 
     __tablename__ = "run_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_config_id: Mapped[str] = mapped_column(String(32), ForeignKey("run_configs.id"), nullable=False, index=True)
     outcode: Mapped[str] = mapped_column(String(8), ForeignKey("outcodes.outcode"), nullable=False, index=True)
+    sector: Mapped[str | None] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=True, index=True)
     total_score: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -194,6 +222,89 @@ class PrivateSchool(Base):
     day_boarding_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     religious_affiliation: Mapped[str | None] = mapped_column(String(64), nullable=True)
     geocoded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PostcodeSector(Base):
+    """A UK postcode sector (outcode + the first digit of the incode, e.g.
+    "SW11 1") and its centroid -- the unit price/travel-time are scored
+    against (finer than Outcode, which amenities stay scored against; see
+    geo_model.domain.pricing module docstring for why the split)."""
+
+    __tablename__ = "postcode_sectors"
+
+    sector: Mapped[str] = mapped_column(String(8), primary_key=True)
+    outcode: Mapped[str] = mapped_column(String(8), ForeignKey("outcodes.outcode"), nullable=False, index=True)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    long: Mapped[float] = mapped_column(Float, nullable=False)
+    postcode_count: Mapped[int] = mapped_column(Integer, nullable=False)  # how many real postcodes the centroid was averaged from
+    last_updated: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PricePaidTransaction(Base):
+    """One HM Land Registry Price Paid Data sale, filtered down to our
+    outcode scope at ingest time (geo_model.price_data). Raw/uncomputed --
+    geo_model.domain.pricing aggregates these into SectorPrice rows. Kept
+    as its own table (rather than aggregating straight to SectorPrice on
+    ingest) so the aggregation window/backoff logic can be re-tuned and
+    re-run without re-fetching from Land Registry."""
+
+    __tablename__ = "price_paid_transactions"
+
+    transaction_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    date: Mapped[dt.date] = mapped_column(nullable=False, index=True)
+    postcode: Mapped[str] = mapped_column(String(16), nullable=False)
+    sector: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    outcode: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F/O
+    old_new: Mapped[str] = mapped_column(String(1), nullable=False)  # Y = new build, N = resale
+    duration: Mapped[str] = mapped_column(String(1), nullable=False)  # F = freehold, L = leasehold
+    district: Mapped[str] = mapped_column(String(128), nullable=False)  # matches HpiIndex.district
+    ppd_category: Mapped[str] = mapped_column(String(1), nullable=False)  # A = standard sale, B = additional (repossession/BTL panel/etc)
+
+
+class HpiIndex(Base):
+    """One month's UK House Price Index row for one local authority
+    district, from HM Land Registry's UK-HPI-full-file download --
+    used to scale a Price Paid transaction to today's-equivalent value.
+    ``district`` matches PricePaidTransaction.district (both upper-cased
+    local authority names); index values are base-100 at Jan 2015."""
+
+    __tablename__ = "hpi_index"
+    __table_args__ = (
+        UniqueConstraint("district", "month", name="uq_hpi_index_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    district: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    month: Mapped[dt.date] = mapped_column(nullable=False, index=True)
+    index_all: Mapped[float | None] = mapped_column(Float, nullable=True)
+    index_detached: Mapped[float | None] = mapped_column(Float, nullable=True)
+    index_semi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    index_terraced: Mapped[float | None] = mapped_column(Float, nullable=True)
+    index_flat: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class SectorPrice(Base):
+    """Computed (not raw) price estimate for one postcode sector + property
+    type, produced by geo_model.domain.pricing from PricePaidTransaction +
+    HpiIndex. ``estimate_grain`` records whether the number came from the
+    sector's own transactions or backed off to its parent outcode's
+    (sparse-sector fallback) -- surfaced to the frontend so a backed-off
+    estimate can be shown/labelled differently from a direct one."""
+
+    __tablename__ = "sector_prices"
+    __table_args__ = (
+        UniqueConstraint("sector", "property_type", name="uq_sector_price_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector: Mapped[str] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=False, index=True)
+    property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F
+    median_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # HPI-adjusted to today's-equivalent
+    transaction_count: Mapped[int] = mapped_column(Integer, nullable=False)  # count actually used (sector- or outcode-level, whichever was used)
+    estimate_grain: Mapped[str] = mapped_column(String(16), nullable=False)  # "sector" | "outcode" | "none"
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class GrammarSchool(Base):

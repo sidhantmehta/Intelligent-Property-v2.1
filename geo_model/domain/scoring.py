@@ -51,6 +51,13 @@ class TravelTimeRecord:
 
 
 @dataclass(frozen=True)
+class SectorTravelTimeRecord:
+    sector: str
+    reference_point_name: str
+    minutes: float
+
+
+@dataclass(frozen=True)
 class CategoryWeight:
     key: str
     weight: float
@@ -67,6 +74,14 @@ class CategoryScore:
 @dataclass
 class OutcodeScore:
     outcode: str
+    total_score: float
+    categories: list[CategoryScore] = field(default_factory=list)
+
+
+@dataclass
+class SectorScore:
+    sector: str
+    outcode: str  # parent outcode, for looking up its shared amenity docs
     total_score: float
     categories: list[CategoryScore] = field(default_factory=list)
 
@@ -175,5 +190,97 @@ def score_outcodes(
 
         total_score = weighted_sum / total_weight if total_weight > 0 else 0.0
         results.append(OutcodeScore(outcode=outcode, total_score=total_score, categories=categories))
+
+    return results
+
+
+def score_sectors(
+    sectors: list[str],
+    sector_to_outcode: dict[str, str],
+    amenities: list[AmenityRecord],
+    category_weights: list[CategoryWeight],
+    radius_bins_miles: list[float],
+    travel_times: list[SectorTravelTimeRecord],
+    reference_weights: list[CategoryWeight],
+) -> list[SectorScore]:
+    """Sector-grain counterpart to score_outcodes(): every sector gets its
+    OWN travel-time score (varies enough within an outcode to be worth the
+    extra HERE calls -- see geo_model.domain.pricing's module docstring),
+    but REUSES its parent outcode's amenity scores rather than recomputing
+    them per sector (amenities don't vary enough within an outcode to
+    justify ~3-4x the Discover calls).
+
+    The key subtlety this requires over just calling score_outcodes() and
+    copying its numbers onto every sector: amenity min-max NORMALIZATION
+    must still happen across outcodes, not across sectors, even though the
+    output here is indexed by sector -- normalizing across sectors would
+    let one outcode with many sectors dominate the distribution (its
+    identical raw amenity score counted 10-20x instead of once), pulling
+    the normalized range toward whatever that outcode happens to score.
+    Travel time, by contrast, DOES get normalized across the full sector
+    population, because that's the whole point of scoring it per sector.
+    """
+    outcodes = sorted(set(sector_to_outcode.values()))
+
+    # --- amenity categories: computed and normalized per OUTCODE, as in
+    # score_outcodes(), then broadcast to every sector under it below. ---
+    raw_by_category: dict[str, dict[str, float]] = {cw.key: {o: 0.0 for o in outcodes} for cw in category_weights}
+    for a in amenities:
+        if a.category_key not in raw_by_category or a.outcode not in raw_by_category[a.category_key]:
+            continue
+        raw_by_category[a.category_key][a.outcode] += radius_weight(a.distance_miles, radius_bins_miles)
+
+    normalized_amenity_by_outcode: dict[str, dict[str, float]] = {
+        key: _min_max_normalize(raw, higher_is_better=True) for key, raw in raw_by_category.items()
+    }
+
+    # --- travel time: raw + normalized per SECTOR ---
+    minutes_by_ref: dict[str, dict[str, float | None]] = {
+        rw.key: {s: None for s in sectors} for rw in reference_weights
+    }
+    for t in travel_times:
+        if t.reference_point_name not in minutes_by_ref or t.sector not in minutes_by_ref[t.reference_point_name]:
+            continue
+        minutes_by_ref[t.reference_point_name][t.sector] = t.minutes
+
+    normalized_by_ref: dict[str, dict[str, float]] = {}
+    for rw in reference_weights:
+        known_minutes = {s: m for s, m in minutes_by_ref[rw.key].items() if m is not None}
+        normalized_known = _min_max_normalize(known_minutes, higher_is_better=False)
+        normalized_by_ref[rw.key] = {s: normalized_known.get(s, 0.0) for s in sectors}
+
+    # --- blend into total_score per sector ---
+    total_weight = sum(cw.weight for cw in category_weights) + sum(rw.weight for rw in reference_weights)
+    results: list[SectorScore] = []
+    for sector in sectors:
+        outcode = sector_to_outcode[sector]
+        categories: list[CategoryScore] = []
+        weighted_sum = 0.0
+        for cw in category_weights:
+            normalized = normalized_amenity_by_outcode[cw.key][outcode]
+            categories.append(
+                CategoryScore(
+                    category_key=cw.key,
+                    raw_score=raw_by_category[cw.key][outcode],
+                    normalized_score=normalized,
+                    weight_applied=cw.weight,
+                )
+            )
+            weighted_sum += normalized * cw.weight
+        for rw in reference_weights:
+            normalized = normalized_by_ref[rw.key][sector]
+            raw_minutes = minutes_by_ref[rw.key][sector]
+            categories.append(
+                CategoryScore(
+                    category_key=travel_time_category_key(rw.key),
+                    raw_score=raw_minutes if raw_minutes is not None else -1.0,
+                    normalized_score=normalized,
+                    weight_applied=rw.weight,
+                )
+            )
+            weighted_sum += normalized * rw.weight
+
+        total_score = weighted_sum / total_weight if total_weight > 0 else 0.0
+        results.append(SectorScore(sector=sector, outcode=outcode, total_score=total_score, categories=categories))
 
     return results

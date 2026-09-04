@@ -45,7 +45,8 @@ from geo_model.config import load_model_config  # noqa: E402
 from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
 from geo_model.grammar_schools import import_grammar_schools  # noqa: E402
-from geo_model.postcodes import backfill_outcode_areas, seed_outcodes_table  # noqa: E402
+from geo_model.postcodes import backfill_outcode_areas, compute_sector_centroids, seed_outcodes_table  # noqa: E402
+from geo_model.price_data import ingest_hpi_index, ingest_price_paid_data  # noqa: E402
 from geo_model.private_schools import import_private_schools  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
 from geo_model.usage_report import current_calendar_month_start, summarize_usage  # noqa: E402
@@ -83,6 +84,31 @@ def cmd_backfill_areas(args: argparse.Namespace) -> None:
     with get_session() as session:
         n = backfill_outcode_areas(session, outcode_filter=scope)
     print(f"Backfilled borough/geo_group for {n} outcodes.")
+
+
+def cmd_ingest_price_data(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    scope = _read_scope(args.outcodes_file, args.all)
+    if scope is None:
+        raise SystemExit("ingest-price-data requires a bounded outcode scope (default is fine) -- --all would try to pull all of England & Wales")
+    outcodes = set(scope)
+    with get_session() as session:
+        ppd_result = ingest_price_paid_data(session, outcodes, years=args.years)
+        hpi_result = ingest_hpi_index(session)
+    print(json.dumps({"price_paid": ppd_result, "hpi": hpi_result}, indent=2))
+
+
+def cmd_compute_sector_centroids(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    with get_session() as session:
+        n = compute_sector_centroids(session)
+    print(f"Computed centroids for {n} postcode sectors.")
+
+
+def cmd_compute_sector_prices(args: argparse.Namespace) -> None:
+    scope = _read_scope(args.outcodes_file, args.all)
+    result = pipeline.compute_sector_prices(outcode_filter=scope)
+    print(json.dumps(result, indent=2))
 
 
 def cmd_seed_legacy(args: argparse.Namespace) -> None:
@@ -185,6 +211,20 @@ def main() -> None:
     p = sub.add_parser("import-grammar-schools", help="Import/geocode the grammar schools register (reference_data/grammar_schools_london_home_counties.csv)")
     p.add_argument("--csv", type=Path, default=DEFAULT_GRAMMAR_SCHOOLS_CSV)
     p.set_defaults(func=cmd_import_grammar_schools)
+
+    p = sub.add_parser("compute-sector-centroids", help="Derive a lat/long centroid for every postcode sector present in price_paid_transactions")
+    p.set_defaults(func=cmd_compute_sector_centroids)
+
+    p = sub.add_parser("compute-sector-prices", help="Aggregate price_paid_transactions + hpi_index into sector_prices (HPI-adjusted median per sector x property type)")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Scope to every outcode with ingested transactions")
+    p.set_defaults(func=cmd_compute_sector_prices)
+
+    p = sub.add_parser("ingest-price-data", help="Fetch Price Paid Data (recent years) + the UK HPI, filtered to our outcode scope")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Refuse -- ingest-price-data always needs a bounded scope, see --outcodes-file")
+    p.add_argument("--years", type=int, nargs="+", default=[2021, 2022, 2023, 2024, 2025, 2026], help="Which pp-<year>.csv files to pull")
+    p.set_defaults(func=cmd_ingest_price_data)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),

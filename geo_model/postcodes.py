@@ -20,7 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from geo_model.data.models import Outcode
+from geo_model.data.models import Outcode, PostcodeSector, PricePaidTransaction
 from geo_model.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -266,6 +266,58 @@ def fetch_postcode_centroids(postcodes: list[str]) -> dict[str, tuple[float, flo
         logger.info("postcodes.io: resolved %d/%d postcodes so far", len(result), i + len(batch))
 
     return result
+
+
+# How many real postcodes to sample per sector when computing its centroid.
+# Postcode sectors are small (typically a few hundred metres to ~1km
+# across), so averaging a handful of real addresses' coordinates is plenty
+# -- no need to bulk-lookup every one of the (often hundreds of) distinct
+# postcodes a busy sector has in price_paid_transactions.
+_SECTOR_CENTROID_SAMPLE_SIZE = 8
+
+
+def compute_sector_centroids(session: Session, sample_size: int = _SECTOR_CENTROID_SAMPLE_SIZE) -> int:
+    """Derives a lat/long centroid for every postcode sector that has at
+    least one row in price_paid_transactions, by bulk-looking-up a sample
+    of that sector's real postcodes via postcodes.io and averaging them.
+    Upserts into postcode_sectors. Returns the number of sectors seeded."""
+    rows = session.execute(
+        select(PricePaidTransaction.sector, PricePaidTransaction.outcode, PricePaidTransaction.postcode).distinct()
+    ).all()
+
+    by_sector: dict[str, dict] = {}
+    for sector, outcode, postcode in rows:
+        entry = by_sector.setdefault(sector, {"outcode": outcode, "postcodes": []})
+        if len(entry["postcodes"]) < sample_size:
+            entry["postcodes"].append(postcode)
+
+    all_sample_postcodes = sorted({pc for entry in by_sector.values() for pc in entry["postcodes"]})
+    logger.info(
+        "Computing centroids for %d sectors from a sample of %d real postcodes",
+        len(by_sector), len(all_sample_postcodes),
+    )
+    centroids = fetch_postcode_centroids(all_sample_postcodes)
+
+    seeded = 0
+    for sector, entry in by_sector.items():
+        points = [centroids[pc] for pc in entry["postcodes"] if pc in centroids]
+        if not points:
+            logger.warning("No resolved postcodes for sector=%s (%d sampled) -- skipping", sector, len(entry["postcodes"]))
+            continue
+        lat = sum(p[0] for p in points) / len(points)
+        long_ = sum(p[1] for p in points) / len(points)
+        stmt = sqlite_insert(PostcodeSector).values(
+            sector=sector, outcode=entry["outcode"], lat=lat, long=long_, postcode_count=len(points),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["sector"],
+            set_={"lat": stmt.excluded.lat, "long": stmt.excluded.long, "postcode_count": stmt.excluded.postcode_count},
+        )
+        session.execute(stmt)
+        seeded += 1
+
+    logger.info("Seeded %d/%d sector centroids (%d unresolved)", seeded, len(by_sector), len(by_sector) - seeded)
+    return seeded
 
 
 def seed_outcodes_table(session: Session, outcodes_file: Path, outcode_filter: list[str] | None = None) -> int:
