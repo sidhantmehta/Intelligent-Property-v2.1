@@ -115,6 +115,24 @@
   .legend .ramp { display: flex; height: 10px; border-radius: 3px; overflow: hidden; flex: 1; }
   .legend .ramp span { flex: 1; }
 
+  /* ---------- table filters / pagination ---------- */
+  .filter-bar { display: flex; flex-direction: column; gap: 6px; }
+  .filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .filter-row select, .filter-row input[type=number] {
+    padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--ink); font-size: 12px; font-family: var(--font-mono);
+  }
+  .filter-row input[type=number] { width: 90px; }
+  .filter-row .remove { background: none; border: none; color: var(--crit); cursor: pointer; font-size: 13px; padding: 2px 4px; }
+  .filter-empty { font-size: 12px; color: var(--muted); }
+  .table-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--ink-2); }
+  .table-footer .pager { display: flex; align-items: center; gap: 8px; }
+  .table-footer select {
+    padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--ink); font-family: var(--font-mono); font-size: 12px;
+  }
+  .table-footer button.btn { padding: 4px 10px; font-size: 12px; }
+
   /* ---------- table ---------- */
   .table-scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
@@ -200,12 +218,14 @@
       <div class="card">
         <h2>Scores by outcode</h2>
         <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given outcode at a glance.</div>
+        <div class="filter-bar" id="filterBar" style="margin-top:10px;"></div>
         <div class="table-scroll" style="margin-top:10px;">
           <table id="resultsTable">
             <thead><tr id="tableHeadRow"></tr></thead>
             <tbody id="tableBody"></tbody>
           </table>
         </div>
+        <div class="table-footer" id="tableFooter" style="margin-top:10px;"></div>
       </div>
     </div>
 
@@ -294,8 +314,20 @@
     outcodes: [],
     sortKey: "total_score",
     sortDir: "desc",
-    activeOutcode: null
+    activeOutcode: null,
+    filters: [],
+    pageSize: 50,
+    currentPage: 1
   };
+
+  var FILTER_OPS = [
+    { key: ">", label: "&gt;" },
+    { key: ">=", label: "&ge;" },
+    { key: "<", label: "&lt;" },
+    { key: "<=", label: "&le;" },
+    { key: "=", label: "=" }
+  ];
+  var PAGE_SIZES = [25, 50, 100, "all"];
 
   function travelKey(name) { return "travel_time::" + name; }
 
@@ -308,6 +340,47 @@
       cols.push({ key: travelKey(r.name), label: r.name, isTravel: true });
     });
     return cols;
+  }
+
+  function filterableColumns() {
+    return [{ key: "total_score", label: "Total" }].concat(columns());
+  }
+
+  function cellValue(o, key) {
+    if (key === "total_score") return o.total_score;
+    var cell = o.categories[key];
+    return cell ? cell.raw_score : null;
+  }
+
+  function applyFilters(list) {
+    if (!state.filters.length) return list;
+    return list.filter(function (o) {
+      return state.filters.every(function (f) {
+        var v = cellValue(o, f.key);
+        if (v == null || isNaN(v) || f.value === "" || f.value == null) return true;
+        var target = Number(f.value);
+        if (isNaN(target)) return true;
+        switch (f.op) {
+          case ">": return v > target;
+          case ">=": return v >= target;
+          case "<": return v < target;
+          case "<=": return v <= target;
+          case "=": return v === target;
+          default: return true;
+        }
+      });
+    });
+  }
+
+  function paginate(list) {
+    if (state.pageSize === "all") {
+      return { slice: list, totalPages: 1, start: 0 };
+    }
+    var size = Number(state.pageSize);
+    var totalPages = Math.max(1, Math.ceil(list.length / size));
+    state.currentPage = Math.min(Math.max(1, state.currentPage), totalPages);
+    var start = (state.currentPage - 1) * size;
+    return { slice: list.slice(start, start + size), totalPages: totalPages, start: start };
   }
 
   // ---------------- rendering: header pill / banner ----------------
@@ -442,9 +515,8 @@
   }
 
   // ---------------- rendering: table ----------------
-  function sortedOutcodes() {
-    var cols = columns();
-    var list = state.outcodes.slice();
+  function sortedOutcodes(list) {
+    list = list.slice();
     var key = state.sortKey, dir = state.sortDir === "asc" ? 1 : -1;
     list.sort(function (a, b) {
       var av, bv;
@@ -458,6 +530,156 @@
       return dir * (av - bv);
     });
     return list;
+  }
+
+  // ---------------- rendering: filters ----------------
+  function renderFilters() {
+    var bar = document.getElementById("filterBar");
+    bar.innerHTML = "";
+    var cols = filterableColumns();
+
+    state.filters.forEach(function (f, i) {
+      var row = document.createElement("div");
+      row.className = "filter-row";
+
+      var colSelect = document.createElement("select");
+      colSelect.dataset.idx = i; colSelect.dataset.field = "key";
+      cols.forEach(function (c) {
+        var opt = document.createElement("option");
+        opt.value = c.key; opt.textContent = c.label;
+        if (c.key === f.key) opt.selected = true;
+        colSelect.appendChild(opt);
+      });
+
+      var opSelect = document.createElement("select");
+      opSelect.dataset.idx = i; opSelect.dataset.field = "op";
+      FILTER_OPS.forEach(function (o) {
+        var opt = document.createElement("option");
+        opt.value = o.key; opt.innerHTML = o.label;
+        if (o.key === f.op) opt.selected = true;
+        opSelect.appendChild(opt);
+      });
+
+      var valInput = document.createElement("input");
+      valInput.type = "number"; valInput.step = "any";
+      valInput.dataset.idx = i; valInput.dataset.field = "value";
+      valInput.value = f.value == null ? "" : f.value;
+
+      var removeBtn = document.createElement("button");
+      removeBtn.type = "button"; removeBtn.className = "remove"; removeBtn.title = "Remove filter";
+      removeBtn.dataset.idx = i;
+      removeBtn.textContent = "✕";
+
+      row.appendChild(colSelect); row.appendChild(opSelect); row.appendChild(valInput); row.appendChild(removeBtn);
+      bar.appendChild(row);
+    });
+
+    var addRow = document.createElement("div");
+    addRow.className = "filter-row";
+    var addBtn = document.createElement("button");
+    addBtn.type = "button"; addBtn.className = "btn"; addBtn.id = "addFilterBtn";
+    addBtn.textContent = "+ Add filter";
+    addRow.appendChild(addBtn);
+    if (!state.filters.length) {
+      var hint = document.createElement("span");
+      hint.className = "filter-empty";
+      hint.textContent = "No filters — showing every outcode.";
+      addRow.appendChild(hint);
+    }
+    bar.appendChild(addRow);
+  }
+
+  function wireFilterBar() {
+    var bar = document.getElementById("filterBar");
+    bar.addEventListener("click", function (ev) {
+      if (ev.target.id === "addFilterBtn") {
+        state.filters.push({ key: "total_score", op: ">", value: "" });
+        state.currentPage = 1;
+        renderFilters();
+        renderTable();
+      } else if (ev.target.classList.contains("remove")) {
+        state.filters.splice(Number(ev.target.dataset.idx), 1);
+        state.currentPage = 1;
+        renderFilters();
+        renderTable();
+      }
+    });
+    bar.addEventListener("change", function (ev) {
+      var idx = ev.target.dataset.idx;
+      if (idx == null) return;
+      var field = ev.target.dataset.field;
+      var f = state.filters[Number(idx)];
+      if (!f) return;
+      f[field] = field === "value" ? ev.target.value : ev.target.value;
+      state.currentPage = 1;
+      renderTable();
+    });
+  }
+
+  // ---------------- rendering: pagination footer ----------------
+  function renderFooter(total, pag) {
+    var footer = document.getElementById("tableFooter");
+    footer.innerHTML = "";
+    if (!total) { return; }
+
+    var rangeText = document.createElement("span");
+    if (state.pageSize === "all") {
+      rangeText.textContent = "Showing all " + total + " outcodes";
+    } else {
+      var from = total === 0 ? 0 : pag.start + 1;
+      var to = Math.min(pag.start + pag.slice.length, total);
+      rangeText.textContent = "Showing " + from + "–" + to + " of " + total;
+    }
+    footer.appendChild(rangeText);
+
+    var pager = document.createElement("div");
+    pager.className = "pager";
+
+    var sizeLabel = document.createElement("label");
+    sizeLabel.textContent = "Rows per page: ";
+    var sizeSelect = document.createElement("select");
+    sizeSelect.id = "pageSizeSelect";
+    PAGE_SIZES.forEach(function (s) {
+      var opt = document.createElement("option");
+      opt.value = s; opt.textContent = s === "all" ? "All" : String(s);
+      if (state.pageSize === s) opt.selected = true;
+      sizeSelect.appendChild(opt);
+    });
+    sizeLabel.appendChild(sizeSelect);
+    pager.appendChild(sizeLabel);
+
+    if (state.pageSize !== "all") {
+      var prevBtn = document.createElement("button");
+      prevBtn.type = "button"; prevBtn.className = "btn"; prevBtn.id = "prevPageBtn";
+      prevBtn.textContent = "←"; prevBtn.disabled = state.currentPage <= 1;
+
+      var pageLabel = document.createElement("span");
+      pageLabel.textContent = "Page " + state.currentPage + " of " + pag.totalPages;
+
+      var nextBtn = document.createElement("button");
+      nextBtn.type = "button"; nextBtn.className = "btn"; nextBtn.id = "nextPageBtn";
+      nextBtn.textContent = "→"; nextBtn.disabled = state.currentPage >= pag.totalPages;
+
+      pager.appendChild(prevBtn); pager.appendChild(pageLabel); pager.appendChild(nextBtn);
+    }
+
+    footer.appendChild(pager);
+  }
+
+  function wireFooter() {
+    var footer = document.getElementById("tableFooter");
+    footer.addEventListener("change", function (ev) {
+      if (ev.target.id === "pageSizeSelect") {
+        var v = ev.target.value;
+        state.pageSize = v === "all" ? "all" : Number(v);
+        state.currentPage = 1;
+        renderTable();
+      }
+    });
+    footer.addEventListener("click", function (ev) {
+      if (ev.target.id === "prevPageBtn") { state.currentPage -= 1; renderTable(); }
+      else if (ev.target.id === "nextPageBtn") { state.currentPage += 1; renderTable(); }
+    });
   }
 
   function renderTableHead() {
@@ -476,6 +698,7 @@
       th.addEventListener("click", function () {
         if (state.sortKey === c.key) { state.sortDir = state.sortDir === "asc" ? "desc" : "asc"; }
         else { state.sortKey = c.key; state.sortDir = "desc"; }
+        state.currentPage = 1;
         renderTable();
       });
       row.appendChild(th);
@@ -495,9 +718,29 @@
       td.style.color = "var(--muted)";
       tr.appendChild(td);
       body.appendChild(tr);
+      document.getElementById("tableFooter").innerHTML = "";
       return;
     }
-    sortedOutcodes().forEach(function (o) {
+
+    var filtered = applyFilters(state.outcodes);
+    var sorted = sortedOutcodes(filtered);
+
+    if (!sorted.length) {
+      var tr2 = document.createElement("tr");
+      var td2 = document.createElement("td");
+      td2.colSpan = cols.length + 2;
+      td2.textContent = "No outcodes match the current filters.";
+      td2.style.color = "var(--muted)";
+      tr2.appendChild(td2);
+      body.appendChild(tr2);
+      renderFooter(0, { slice: [], totalPages: 1, start: 0 });
+      return;
+    }
+
+    var pag = paginate(sorted);
+    renderFooter(sorted.length, pag);
+
+    pag.slice.forEach(function (o) {
       var tr = document.createElement("tr");
       tr.className = o.outcode === state.activeOutcode ? "active" : "";
       tr.addEventListener("click", function () { setActive(o.outcode, false); });
@@ -610,6 +853,7 @@
     db.doc("config/current").onSnapshot(function (snap) {
       state.config = snap.exists ? snap.data() : DEFAULT_CONFIG;
       renderSettings();
+      renderFilters();
       renderTableHead();
       renderTable();
       renderMap();
@@ -678,11 +922,14 @@
   function init() {
     renderSettings();
     renderStatus();
+    renderFilters();
     renderTableHead();
     renderTable();
     renderMap();
     renderLegend();
     wireButtons();
+    wireFilterBar();
+    wireFooter();
 
     if (!window.claude || !window.claude.use) return;
     window.claude.use("db").then(function (db) {
