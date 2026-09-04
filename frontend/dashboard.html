@@ -63,7 +63,7 @@
   button { font-family: inherit; }
   code, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 20px 64px; }
+  .wrap { max-width: 1800px; width: 100%; margin: 0 auto; padding: 20px clamp(12px, 3vw, 40px) 64px; }
 
   /* ---------- header ---------- */
   .topbar {
@@ -97,9 +97,11 @@
   .card .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
 
   /* ---------- map ---------- */
-  #mapCard svg { width: 100%; height: auto; display: block; background: var(--surface-2); border-radius: 8px; }
-  .map-dot { cursor: pointer; stroke: var(--surface); stroke-width: 1.5; transition: r 0.1s ease; }
-  .map-dot:hover, .map-dot.active { stroke: var(--accent); stroke-width: 2.5; }
+  #mapCard svg { width: 100%; height: auto; display: block; background: #eef2f6; border-radius: 8px; }
+  .map-dot { cursor: pointer; stroke: #ffffff; stroke-width: 1.2; fill-opacity: 0.88; transition: r 0.1s ease; }
+  .map-dot:hover, .map-dot.active { stroke: var(--accent); stroke-width: 2.5; fill-opacity: 1; }
+  .map-grid line { stroke: #d3dbe2; stroke-width: 1; }
+  .map-grid text { fill: #8a939c; font-size: 9px; font-family: var(--font-mono); }
   .map-tooltip {
     position: absolute; pointer-events: none; background: var(--ink); color: var(--page);
     font-size: 12px; padding: 6px 9px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, -130%);
@@ -342,6 +344,7 @@
     }
 
     var ns = "http://www.w3.org/2000/svg";
+    drawGraticule(svg, ns, W, H, PAD, minLat, maxLat, minLong, maxLong, project);
     state.outcodes.forEach(function (o) {
       var xy = project(o);
       var c = document.createElementNS(ns, "circle");
@@ -357,6 +360,45 @@
       c.addEventListener("click", function () { setActive(o.outcode, true); });
       svg.appendChild(c);
     });
+  }
+
+  function niceStep(span, targetCount) {
+    var raw = (span || 1) / targetCount;
+    var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var norm = raw / mag;
+    var step = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+    return step * mag;
+  }
+
+  function drawGraticule(svg, ns, W, H, PAD, minLat, maxLat, minLong, maxLong, project) {
+    var g = document.createElementNS(ns, "g");
+    g.setAttribute("class", "map-grid");
+    var latStep = niceStep(maxLat - minLat, 5);
+    var longStep = niceStep(maxLong - minLong, 5);
+
+    for (var lat = Math.ceil(minLat / latStep) * latStep; lat <= maxLat; lat += latStep) {
+      var y = project({ lat: lat, long: minLong })[1];
+      var line = document.createElementNS(ns, "line");
+      line.setAttribute("x1", PAD); line.setAttribute("x2", W - PAD);
+      line.setAttribute("y1", y.toFixed(1)); line.setAttribute("y2", y.toFixed(1));
+      g.appendChild(line);
+      var label = document.createElementNS(ns, "text");
+      label.setAttribute("x", 4); label.setAttribute("y", (y - 3).toFixed(1));
+      label.textContent = lat.toFixed(2) + "°N";
+      g.appendChild(label);
+    }
+    for (var lng = Math.ceil(minLong / longStep) * longStep; lng <= maxLong; lng += longStep) {
+      var x = project({ lat: minLat, long: lng })[0];
+      var line2 = document.createElementNS(ns, "line");
+      line2.setAttribute("x1", x.toFixed(1)); line2.setAttribute("x2", x.toFixed(1));
+      line2.setAttribute("y1", PAD); line2.setAttribute("y2", H - PAD);
+      g.appendChild(line2);
+      var label2 = document.createElementNS(ns, "text");
+      label2.setAttribute("x", (x + 3).toFixed(1)); label2.setAttribute("y", H - 6);
+      label2.textContent = (lng >= 0 ? lng.toFixed(2) + "°E" : (-lng).toFixed(2) + "°W");
+      g.appendChild(label2);
+    }
+    svg.appendChild(g);
   }
 
   function showTooltip(ev, o) {
