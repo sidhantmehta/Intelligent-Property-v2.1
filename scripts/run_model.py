@@ -40,12 +40,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from geo_model import pipeline  # noqa: E402
-from geo_model.artifact_sync import artifact_doc_to_overrides, export_config_doc, export_results_for_artifact  # noqa: E402
+from geo_model.artifact_sync import artifact_doc_to_overrides, export_config_doc, export_geo_labels, export_results_for_artifact  # noqa: E402
 from geo_model.config import load_model_config  # noqa: E402
 from geo_model.data.db import get_session  # noqa: E402
 from geo_model.logging_setup import get_logger  # noqa: E402
 from geo_model.grammar_schools import import_grammar_schools  # noqa: E402
-from geo_model.postcodes import seed_outcodes_table  # noqa: E402
+from geo_model.postcodes import backfill_outcode_areas, seed_outcodes_table  # noqa: E402
 from geo_model.private_schools import import_private_schools  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
 from geo_model.usage_report import current_calendar_month_start, summarize_usage  # noqa: E402
@@ -75,6 +75,14 @@ def cmd_seed_outcodes(args: argparse.Namespace) -> None:
     with get_session() as session:
         n = seed_outcodes_table(session, DEFAULT_OUTCODES_FILE, outcode_filter=scope)
     print(f"Seeded {n} outcode centroids.")
+
+
+def cmd_backfill_areas(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    scope = _read_scope(args.outcodes_file, args.all)
+    with get_session() as session:
+        n = backfill_outcode_areas(session, outcode_filter=scope)
+    print(f"Backfilled borough/geo_group for {n} outcodes.")
 
 
 def cmd_seed_legacy(args: argparse.Namespace) -> None:
@@ -132,6 +140,12 @@ def cmd_export_artifact_results(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_export_artifact_labels(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    result = export_geo_labels(args.out)
+    print(json.dumps(result, indent=2))
+
+
 def cmd_usage_summary(args: argparse.Namespace) -> None:
     pipeline.ensure_db_ready()
     since = None
@@ -174,6 +188,7 @@ def main() -> None:
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),
+        ("backfill-areas", cmd_backfill_areas),
         ("refresh-geo-data", cmd_refresh_geo_data),
         ("run-model", cmd_run_model),
     ):
@@ -196,6 +211,10 @@ def main() -> None:
     p.add_argument("--out-dir", type=Path, default=REPO_ROOT / "frontend" / "export" / "results")
     p.add_argument("--example", action="store_true", help="Flag this export as example/illustrative data")
     p.set_defaults(func=cmd_export_artifact_results)
+
+    p = sub.add_parser("export-artifact-labels", help="Write results/latest/labels (map county/town label points) for the Artifact frontend")
+    p.add_argument("--out", type=Path, default=REPO_ROOT / "frontend" / "export" / "labels.json")
+    p.set_defaults(func=cmd_export_artifact_labels)
 
     p = sub.add_parser("usage-summary", help="Summarize provider API calls this pipeline has made and recorded")
     p.add_argument("--provider", type=str, default=None, help="Restrict to one provider (e.g. 'here')")

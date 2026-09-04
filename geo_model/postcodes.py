@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -39,21 +40,27 @@ def load_outcode_list(outcodes_file: Path) -> list[str]:
     return [entry["outcode"] for entry in raw]
 
 
-def _fetch_one(session: requests.Session, outcode: str) -> tuple[str, tuple[float, float] | None]:
+def _fetch_outcode_result(session: requests.Session, outcode: str) -> dict | None:
     try:
         resp = session.get(POSTCODES_IO_OUTCODE_URL.format(outcode), timeout=_TIMEOUT_SECONDS)
     except requests.RequestException as e:
         logger.error("postcodes.io lookup failed for outcode=%s: %s", outcode, e)
-        return outcode, None
+        return None
 
     if resp.status_code == 404:
         logger.warning("postcodes.io has no data for outcode=%s", outcode)
-        return outcode, None
+        return None
     if resp.status_code != 200:
         logger.error("postcodes.io lookup failed for outcode=%s: status=%d body=%s", outcode, resp.status_code, resp.text[:300])
-        return outcode, None
+        return None
 
-    data = resp.json()["result"]
+    return resp.json()["result"]
+
+
+def _fetch_one(session: requests.Session, outcode: str) -> tuple[str, tuple[float, float] | None]:
+    data = _fetch_outcode_result(session, outcode)
+    if data is None:
+        return outcode, None
     return outcode, (data["latitude"], data["longitude"])
 
 
@@ -76,6 +83,155 @@ def fetch_outcode_centroids(outcodes: list[str]) -> dict[str, tuple[float, float
                 logger.info("postcodes.io: resolved %d/%d outcodes so far (%d looked up)", len(result), len(outcodes), i)
 
     return result
+
+
+# The 33 London boroughs (32 boroughs + the City of London), split into the
+# 12-plus-City "Inner London" statistical area and the remaining "Outer"
+# boroughs -- fixed, well-known lists, not derived from any API. Matched
+# against postcodes.io's admin_district names (which is why "City of
+# London" appears here rather than "Corporation of London" or similar).
+INNER_LONDON_BOROUGHS = {
+    "Camden", "Greenwich", "Hackney", "Hammersmith and Fulham", "Islington",
+    "Kensington and Chelsea", "Lambeth", "Lewisham", "Southwark",
+    "Tower Hamlets", "Wandsworth", "Westminster", "City of London",
+}
+OUTER_LONDON_BOROUGHS = {
+    "Barking and Dagenham", "Barnet", "Bexley", "Brent", "Bromley",
+    "Croydon", "Ealing", "Enfield", "Haringey", "Harrow", "Havering",
+    "Hillingdon", "Hounslow", "Kingston upon Thames", "Merton", "Newham",
+    "Redbridge", "Richmond upon Thames", "Sutton", "Waltham Forest",
+}
+LONDON_BOROUGHS = INNER_LONDON_BOROUGHS | OUTER_LONDON_BOROUGHS
+
+# Home Counties districts -> their traditional/ceremonial county, for the
+# map's county-level labels. Built from the districts that actually appear
+# across the 681-outcode London + Home Counties scope (see
+# connector_scraper_data/outcodes_london_and_home_counties.txt) -- covers
+# Surrey, Kent, Essex, Hertfordshire, Buckinghamshire, Berkshire,
+# Bedfordshire, and the bit of East/West Sussex and Hampshire the scope
+# reaches into. A district not listed here (a scope change, or postcodes.io
+# returning an unexpected name) just gets no county label -- borough/group
+# classification doesn't depend on this map at all.
+DISTRICT_TO_COUNTY = {
+    # Surrey
+    "Elmbridge": "Surrey", "Epsom and Ewell": "Surrey", "Guildford": "Surrey",
+    "Mole Valley": "Surrey", "Reigate and Banstead": "Surrey", "Runnymede": "Surrey",
+    "Spelthorne": "Surrey", "Surrey Heath": "Surrey", "Tandridge": "Surrey",
+    "Waverley": "Surrey", "Woking": "Surrey",
+    # Kent
+    "Ashford": "Kent", "Canterbury": "Kent", "Dartford": "Kent", "Dover": "Kent",
+    "Folkestone and Hythe": "Kent", "Gravesham": "Kent", "Maidstone": "Kent",
+    "Sevenoaks": "Kent", "Swale": "Kent", "Thanet": "Kent",
+    "Tonbridge and Malling": "Kent", "Tunbridge Wells": "Kent",
+    "Medway": "Kent",
+    # Essex
+    "Basildon": "Essex", "Braintree": "Essex", "Brentwood": "Essex",
+    "Castle Point": "Essex", "Chelmsford": "Essex", "Colchester": "Essex",
+    "Epping Forest": "Essex", "Harlow": "Essex", "Maldon": "Essex",
+    "Rochford": "Essex", "Tendring": "Essex", "Uttlesford": "Essex",
+    "Southend-on-Sea": "Essex", "Thurrock": "Essex",
+    # Hertfordshire
+    "Broxbourne": "Hertfordshire", "Dacorum": "Hertfordshire",
+    "East Hertfordshire": "Hertfordshire", "Hertsmere": "Hertfordshire",
+    "North Hertfordshire": "Hertfordshire", "St Albans": "Hertfordshire",
+    "Stevenage": "Hertfordshire", "Three Rivers": "Hertfordshire",
+    "Watford": "Hertfordshire", "Welwyn Hatfield": "Hertfordshire",
+    # Buckinghamshire
+    "Buckinghamshire": "Buckinghamshire", "Chiltern": "Buckinghamshire",
+    "South Bucks": "Buckinghamshire", "Wycombe": "Buckinghamshire",
+    "Aylesbury Vale": "Buckinghamshire", "Milton Keynes": "Buckinghamshire",
+    # Berkshire (no county council since 1998, but still the ceremonial county)
+    "Bracknell Forest": "Berkshire", "Reading": "Berkshire",
+    "Slough": "Berkshire", "West Berkshire": "Berkshire",
+    "Windsor and Maidenhead": "Berkshire", "Wokingham": "Berkshire",
+    # Bedfordshire
+    "Bedford": "Bedfordshire", "Central Bedfordshire": "Bedfordshire",
+    "Luton": "Bedfordshire",
+    # West Sussex
+    "Crawley": "West Sussex", "Horsham": "West Sussex", "Mid Sussex": "West Sussex",
+    "Worthing": "West Sussex", "Arun": "West Sussex", "Adur": "West Sussex",
+    "Chichester": "West Sussex", "Brighton and Hove": "West Sussex",
+    # East Sussex
+    "Lewes": "East Sussex", "Eastbourne": "East Sussex", "Rother": "East Sussex",
+    "Wealden": "East Sussex", "Hastings": "East Sussex",
+    # Hampshire (edge of scope)
+    "Rushmoor": "Hampshire", "East Hampshire": "Hampshire", "Hart": "Hampshire",
+    "Basingstoke and Deane": "Hampshire",
+    # Oxfordshire (edge of scope)
+    "Vale of White Horse": "Oxfordshire", "South Oxfordshire": "Oxfordshire",
+    # Suffolk (edge of scope)
+    "Babergh": "Suffolk",
+    "Sevenoaks District": "Kent",
+}
+
+
+def borough_geo_group(admin_districts: list[str]) -> tuple[str | None, str | None]:
+    """Classifies an outcode's postcodes.io admin_district list into
+    (borough, geo_group). An outcode can straddle more than one district
+    (e.g. SW1A: Wandsworth + Westminster) -- picks the first that's a
+    recognised London borough if any is, else just the first district
+    (good enough: districts within one outcode are always adjacent)."""
+    if not admin_districts:
+        return None, None
+    london = next((d for d in admin_districts if d in LONDON_BOROUGHS), None)
+    borough = london or admin_districts[0]
+    if borough in INNER_LONDON_BOROUGHS:
+        geo_group = "Inner London"
+    elif borough in OUTER_LONDON_BOROUGHS:
+        geo_group = "Greater London"
+    else:
+        geo_group = "Home Counties"
+    return borough, geo_group
+
+
+def fetch_outcode_admin_areas(outcodes: list[str]) -> dict[str, tuple[str | None, str | None]]:
+    """Looks up (borough, geo_group) for each outcode via postcodes.io's
+    per-outcode endpoint's admin_district field. Same one-request-per-
+    outcode shape as fetch_outcode_centroids (postcodes.io has no bulk
+    /outcodes endpoint)."""
+    session = requests.Session()
+    result: dict[str, tuple[str | None, str | None]] = {}
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {pool.submit(_fetch_outcode_result, session, o): o for o in outcodes}
+        for i, future in enumerate(as_completed(futures), start=1):
+            outcode = futures[future]
+            data = future.result()
+            if data is not None:
+                result[outcode] = borough_geo_group(data.get("admin_district") or [])
+            if i % 100 == 0 or i == len(outcodes):
+                logger.info("postcodes.io: resolved admin areas for %d/%d outcodes so far", i, len(outcodes))
+
+    return result
+
+
+def backfill_outcode_areas(session: Session, outcode_filter: list[str] | None = None) -> int:
+    """Populates borough/region/geo_group for outcodes already in the
+    table (region is set to the DISTRICT_TO_COUNTY mapping's county for
+    Home Counties boroughs, or "Greater London" for London ones -- see
+    module docstring lists above). Returns the number updated."""
+    query = select(Outcode)
+    if outcode_filter:
+        query = query.where(Outcode.outcode.in_(outcode_filter))
+    outcodes = [o.outcode for o in session.scalars(query)]
+    logger.info("Backfilling borough/geo_group for %d outcodes", len(outcodes))
+    areas = fetch_outcode_admin_areas(outcodes)
+
+    updated = 0
+    for outcode, (borough, geo_group) in areas.items():
+        if geo_group == "Home Counties":
+            region = DISTRICT_TO_COUNTY.get(borough)
+        elif geo_group in ("Inner London", "Greater London"):
+            region = "Greater London"
+        else:
+            region = None
+        session.execute(
+            update(Outcode).where(Outcode.outcode == outcode).values(borough=borough, region=region, geo_group=geo_group)
+        )
+        updated += 1
+
+    logger.info("Backfilled %d/%d outcodes (%d not resolved by postcodes.io)", updated, len(outcodes), len(outcodes) - updated)
+    return updated
 
 
 def fetch_postcode_centroids(postcodes: list[str]) -> dict[str, tuple[float, float]]:

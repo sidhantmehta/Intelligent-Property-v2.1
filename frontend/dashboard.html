@@ -104,6 +104,9 @@
   .map-grid line { stroke: #d3dbe2; stroke-width: 1; }
   .map-grid text { fill: #8a939c; font-size: 9px; font-family: var(--font-mono); }
   .map-land { fill: #f7f5ef; stroke: #c7cdd3; stroke-width: 0.6; }
+  .map-label { pointer-events: none; font-family: var(--font-ui); paint-order: stroke; stroke: #eef2f6; stroke-width: 3px; stroke-linejoin: round; }
+  .map-label-county { font-size: 11px; font-weight: 700; letter-spacing: 0.03em; fill: #5c6773; }
+  .map-label-town { font-size: 9px; font-weight: 500; fill: #7a848f; }
   .map-tooltip {
     position: absolute; pointer-events: none; background: var(--ink); color: var(--page);
     font-size: 12px; padding: 6px 9px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, -130%);
@@ -111,6 +114,21 @@
   }
   .map-tooltip.show { opacity: 1; }
   .map-wrap { position: relative; }
+  .map-wrap svg { cursor: grab; touch-action: none; }
+  .map-wrap svg.dragging { cursor: grabbing; }
+  .map-zoom-controls {
+    position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 4;
+  }
+  .map-zoom-controls button {
+    width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--ink); font-size: 15px; font-weight: 700; cursor: pointer; line-height: 1; padding: 0;
+  }
+  .map-zoom-controls button:hover { background: var(--surface-2); }
+  .map-colorby { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); margin-top: 8px; }
+  .map-colorby select {
+    padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--ink); font-size: 12px; font-family: inherit; max-width: 220px;
+  }
 
   .legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: var(--muted); }
   .legend .ramp { display: flex; height: 10px; border-radius: 3px; overflow: hidden; flex: 1; }
@@ -216,21 +234,44 @@
     <div>
       <div class="card" id="mapCard">
         <h2>Map</h2>
-        <div class="hint">Positioned by outcode centroid, coloured by total score. Click a marker to highlight it in the table.</div>
+        <div class="hint" id="mapHint">Positioned by outcode centroid, coloured by total score. Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.</div>
         <div class="map-wrap" style="margin-top:10px;">
           <svg id="mapSvg" viewBox="0 0 640 520" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="map-tooltip" id="mapTooltip"></div>
+          <div class="map-zoom-controls">
+            <button type="button" id="mapZoomIn" title="Zoom in">+</button>
+            <button type="button" id="mapZoomOut" title="Zoom out">−</button>
+            <button type="button" id="mapZoomReset" title="Reset view">⤢</button>
+          </div>
         </div>
         <div class="legend">
           <span>Weaker</span>
           <span class="ramp" id="legendRamp"></span>
           <span>Stronger</span>
         </div>
+        <div class="map-colorby">
+          <label for="colorBySelect">Colour by</label>
+          <select id="colorBySelect"></select>
+        </div>
       </div>
 
       <div class="card">
         <h2>Scores by outcode</h2>
         <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given outcode at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total.</div>
+        <div class="btn-row" id="presetBar" style="margin-top:10px;">
+          <button class="btn" id="presetHomeCounties" type="button">Preset: &lt;60 min to Zig Zag + Home Counties</button>
+          <button class="btn" id="presetGrammar" type="button">Preset: &lt;60 min to Zig Zag + grammar score &gt;1</button>
+          <button class="btn" id="presetClear" type="button">Clear filters</button>
+        </div>
+        <div class="filter-row" style="margin-top:10px;">
+          <label for="geoGroupSelect" style="font-size:12px;color:var(--ink-2);">Group</label>
+          <select id="geoGroupSelect">
+            <option value="All">All</option>
+            <option value="Inner London">Inner London</option>
+            <option value="Greater London">Greater London</option>
+            <option value="Home Counties">Home Counties</option>
+          </select>
+        </div>
         <div class="filter-bar" id="filterBar" style="margin-top:10px;"></div>
         <div class="table-scroll" style="margin-top:10px;">
           <table id="resultsTable">
@@ -339,7 +380,11 @@
     drillOutcode: null,
     drillCategory: null,
     amenitiesCache: {},
-    outcodesError: null
+    outcodesError: null,
+    labels: [],
+    mapView: null,
+    colorBy: "total_score",
+    geoGroupFilter: "All"
   };
 
   var FILTER_OPS = [
@@ -350,6 +395,17 @@
     { key: "=", label: "=" }
   ];
   var PAGE_SIZES = [25, 50, 100, "all"];
+
+  // Columns that always appear, before the configurable amenity/travel
+  // ones -- Outcode/Borough/Group are plain strings (sortable, not
+  // filterable via the numeric filter bar); Total is numeric like the
+  // rest.
+  var FIXED_COLUMNS = [
+    { key: "outcode", label: "Outcode" },
+    { key: "borough", label: "Borough" },
+    { key: "geo_group", label: "Group" },
+    { key: "total_score", label: "Total" }
+  ];
 
   function travelKey(name) { return "travel_time::" + name; }
 
@@ -375,6 +431,9 @@
   }
 
   function applyFilters(list) {
+    if (state.geoGroupFilter && state.geoGroupFilter !== "All") {
+      list = list.filter(function (o) { return o.geo_group === state.geoGroupFilter; });
+    }
     if (!state.filters.length) return list;
     return list.filter(function (o) {
       return state.filters.every(function (f) {
@@ -523,30 +582,114 @@
   }
 
   // ---------------- rendering: map ----------------
+  var MAP_W = 640, MAP_H = 520, MAP_PAD = 24;
+  // Smallest zoomed-in span, as a fraction of the full data span -- caps
+  // how far zoom-in can go so it can't collapse to nothing.
+  var MAP_MIN_SPAN_FRACTION = 0.03;
+
+  function colorValue(o, key) {
+    if (key === "total_score") return o.total_score;
+    var cell = o.categories[key];
+    return cell ? cell.normalized_score : 0;
+  }
+
+  // The full-data bounding box -- the "fit all" view, and the ceiling
+  // zoom-out can't exceed. Independent of state.mapView (which tracks
+  // the current zoom/pan on top of this).
+  function fullMapBounds() {
+    var lats = state.outcodes.map(function (o) { return o.lat; });
+    var longs = state.outcodes.map(function (o) { return o.long; });
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLong = Math.min.apply(null, longs), maxLong = Math.max.apply(null, longs);
+    return {
+      centerLat: (minLat + maxLat) / 2, centerLong: (minLong + maxLong) / 2,
+      spanLat: (maxLat - minLat) || 1, spanLong: (maxLong - minLong) || 1,
+    };
+  }
+
+  // The currently active view window: state.mapView if set (zoomed/panned),
+  // else the full-data bounds. Always clamped so it never zooms out past
+  // "fit all" or in past MAP_MIN_SPAN_FRACTION of it.
+  function activeMapBounds() {
+    var full = fullMapBounds();
+    if (!state.mapView) return full;
+    var minSpanLat = full.spanLat * MAP_MIN_SPAN_FRACTION;
+    var minSpanLong = full.spanLong * MAP_MIN_SPAN_FRACTION;
+    return {
+      centerLat: state.mapView.centerLat, centerLong: state.mapView.centerLong,
+      spanLat: Math.min(full.spanLat, Math.max(minSpanLat, state.mapView.spanLat)),
+      spanLong: Math.min(full.spanLong, Math.max(minSpanLong, state.mapView.spanLong)),
+    };
+  }
+
+  function makeProjection(bounds) {
+    var minLat = bounds.centerLat - bounds.spanLat / 2, maxLat = bounds.centerLat + bounds.spanLat / 2;
+    var minLong = bounds.centerLong - bounds.spanLong / 2, maxLong = bounds.centerLong + bounds.spanLong / 2;
+    return function (o) {
+      var x = MAP_PAD + ((o.long - minLong) / bounds.spanLong) * (MAP_W - 2 * MAP_PAD);
+      var y = MAP_PAD + ((maxLat - o.lat) / bounds.spanLat) * (MAP_H - 2 * MAP_PAD);
+      return [x, y];
+    };
+  }
+
+  // Inverse of makeProjection: screen (SVG viewBox units) -> {lat,long}.
+  function unproject(bounds, x, y) {
+    var minLat = bounds.centerLat - bounds.spanLat / 2, maxLat = bounds.centerLat + bounds.spanLat / 2;
+    var minLong = bounds.centerLong - bounds.spanLong / 2, maxLong = bounds.centerLong + bounds.spanLong / 2;
+    var long = minLong + ((x - MAP_PAD) / (MAP_W - 2 * MAP_PAD)) * bounds.spanLong;
+    var lat = maxLat - ((y - MAP_PAD) / (MAP_H - 2 * MAP_PAD)) * bounds.spanLat;
+    return { lat: lat, long: long };
+  }
+
+  function zoomMapBy(factor, anchorLat, anchorLong) {
+    var current = activeMapBounds();
+    var newSpanLat = current.spanLat / factor, newSpanLong = current.spanLong / factor;
+    // Keep the anchor point (cursor, or view center) fixed on screen as
+    // the span changes around it.
+    var aLat = anchorLat == null ? current.centerLat : anchorLat;
+    var aLong = anchorLong == null ? current.centerLong : anchorLong;
+    var newCenterLat = aLat + (current.centerLat - aLat) * (newSpanLat / current.spanLat);
+    var newCenterLong = aLong + (current.centerLong - aLong) * (newSpanLong / current.spanLong);
+    state.mapView = { centerLat: newCenterLat, centerLong: newCenterLong, spanLat: newSpanLat, spanLong: newSpanLong };
+    renderMap();
+  }
+
+  function panMapByPixels(dxPixels, dyPixels, svgRect) {
+    var current = activeMapBounds();
+    var pxPerDegLong = (svgRect.width * ((MAP_W - 2 * MAP_PAD) / MAP_W)) / current.spanLong;
+    var pxPerDegLat = (svgRect.height * ((MAP_H - 2 * MAP_PAD) / MAP_H)) / current.spanLat;
+    state.mapView = {
+      centerLat: current.centerLat + dyPixels / pxPerDegLat,
+      centerLong: current.centerLong - dxPixels / pxPerDegLong,
+      spanLat: current.spanLat, spanLong: current.spanLong,
+    };
+    renderMap();
+  }
+
+  function resetMapView() {
+    state.mapView = null;
+    renderMap();
+  }
+
   function renderMap() {
     var svg = document.getElementById("mapSvg");
-    var W = 640, H = 520, PAD = 24;
     svg.innerHTML = "";
     if (!state.outcodes.length) {
       var emptyMsg = state.outcodesError ? ("Couldn't load results: " + state.outcodesError) : "No results to plot yet";
       svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' + escapeHtml(emptyMsg) + '</text>';
       return;
     }
-    var lats = state.outcodes.map(function (o) { return o.lat; });
-    var longs = state.outcodes.map(function (o) { return o.long; });
-    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
-    var minLong = Math.min.apply(null, longs), maxLong = Math.max.apply(null, longs);
-    var latSpan = (maxLat - minLat) || 1, longSpan = (maxLong - minLong) || 1;
-
-    function project(o) {
-      var x = PAD + ((o.long - minLong) / longSpan) * (W - 2 * PAD);
-      var y = PAD + ((maxLat - o.lat) / latSpan) * (H - 2 * PAD);
-      return [x, y];
-    }
+    var full = fullMapBounds();
+    var bounds = activeMapBounds();
+    var project = makeProjection(bounds);
+    var zoomFactor = full.spanLat / bounds.spanLat; // 1 = fully zoomed out
 
     var ns = "http://www.w3.org/2000/svg";
     drawLand(svg, ns, project);
-    drawGraticule(svg, ns, W, H, PAD, minLat, maxLat, minLong, maxLong, project);
+    drawGraticule(svg, ns, MAP_W, MAP_H, MAP_PAD,
+      bounds.centerLat - bounds.spanLat / 2, bounds.centerLat + bounds.spanLat / 2,
+      bounds.centerLong - bounds.spanLong / 2, bounds.centerLong + bounds.spanLong / 2, project);
+    drawLabels(svg, ns, project, zoomFactor);
 
     // Only plot outcodes that pass the table's current filters, so the map
     // and table always agree on what's "in view" -- but keep the
@@ -569,7 +712,7 @@
       c.setAttribute("cx", xy[0].toFixed(1));
       c.setAttribute("cy", xy[1].toFixed(1));
       c.setAttribute("r", o.outcode === state.activeOutcode ? 8 : 6);
-      c.setAttribute("fill", rampColor(o.total_score));
+      c.setAttribute("fill", rampColor(colorValue(o, state.colorBy)));
       c.setAttribute("class", "map-dot" + (o.outcode === state.activeOutcode ? " active" : ""));
       c.dataset.outcode = o.outcode;
       c.addEventListener("mouseenter", function (ev) { showTooltip(ev, o); });
@@ -582,6 +725,26 @@
     // Re-append the active dot last so it paints on top of every other
     // marker, including ones it visually overlaps.
     if (activeDot) svg.appendChild(activeDot);
+  }
+
+  // Town (borough) labels only appear once zoomed in a few notches, to
+  // avoid ~100 overlapping labels at the fully-zoomed-out view; county
+  // labels (only ~12) are few enough to show throughout.
+  var TOWN_LABEL_MIN_ZOOM = 2.2;
+
+  function drawLabels(svg, ns, project, zoomFactor) {
+    if (!state.labels.length) return;
+    state.labels.forEach(function (l) {
+      if (l.kind === "town" && zoomFactor < TOWN_LABEL_MIN_ZOOM) return;
+      var xy = project(l);
+      if (xy[0] < 0 || xy[0] > MAP_W || xy[1] < 0 || xy[1] > MAP_H) return;
+      var text = document.createElementNS(ns, "text");
+      text.setAttribute("x", xy[0].toFixed(1));
+      text.setAttribute("y", xy[1].toFixed(1));
+      text.setAttribute("class", "map-label map-label-" + l.kind);
+      text.textContent = l.kind === "county" ? l.name.toUpperCase() : l.name;
+      svg.appendChild(text);
+    });
   }
 
   function niceStep(span, targetCount) {
@@ -639,7 +802,12 @@
 
   function showTooltip(ev, o) {
     var tip = document.getElementById("mapTooltip");
-    tip.textContent = o.outcode + " · " + o.total_score.toFixed(3);
+    var text = o.outcode + " · total " + o.total_score.toFixed(3);
+    if (state.colorBy !== "total_score") {
+      var label = (filterableColumns().find(function (c) { return c.key === state.colorBy; }) || {}).label || state.colorBy;
+      text += " · " + label + " " + colorValue(o, state.colorBy).toFixed(3);
+    }
+    tip.textContent = text;
     tip.classList.add("show");
     moveTooltip(ev);
   }
@@ -656,13 +824,82 @@
     ramp.innerHTML = SEQ_STEPS.map(function (c) { return '<span style="background:' + c + '"></span>'; }).join("");
   }
 
+  function updateMapHint() {
+    var hint = document.getElementById("mapHint");
+    if (!hint) return;
+    var label = (filterableColumns().find(function (c) { return c.key === state.colorBy; }) || {}).label || "total score";
+    hint.textContent = "Positioned by outcode centroid, coloured by " + label.toLowerCase() +
+      ". Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.";
+  }
+
+  function renderColorBySelect() {
+    var select = document.getElementById("colorBySelect");
+    if (!select) return;
+    var cols = filterableColumns();
+    if (!cols.some(function (c) { return c.key === state.colorBy; })) {
+      state.colorBy = "total_score";
+    }
+    select.innerHTML = "";
+    cols.forEach(function (c) {
+      var opt = document.createElement("option");
+      opt.value = c.key; opt.textContent = c.label;
+      if (c.key === state.colorBy) opt.selected = true;
+      select.appendChild(opt);
+    });
+    updateMapHint();
+  }
+
+  function wireMap() {
+    document.getElementById("mapZoomIn").addEventListener("click", function () { zoomMapBy(1.6); });
+    document.getElementById("mapZoomOut").addEventListener("click", function () { zoomMapBy(1 / 1.6); });
+    document.getElementById("mapZoomReset").addEventListener("click", resetMapView);
+    document.getElementById("colorBySelect").addEventListener("change", function (ev) {
+      state.colorBy = ev.target.value;
+      updateMapHint();
+      renderMap();
+    });
+
+    var svg = document.getElementById("mapSvg");
+
+    svg.addEventListener("wheel", function (ev) {
+      if (!state.outcodes.length) return;
+      ev.preventDefault();
+      var rect = svg.getBoundingClientRect();
+      var svgX = (ev.clientX - rect.left) / rect.width * MAP_W;
+      var svgY = (ev.clientY - rect.top) / rect.height * MAP_H;
+      var anchor = unproject(activeMapBounds(), svgX, svgY);
+      zoomMapBy(ev.deltaY < 0 ? 1.25 : 1 / 1.25, anchor.lat, anchor.long);
+    }, { passive: false });
+
+    var dragging = false, dragLastX = 0, dragLastY = 0;
+    svg.addEventListener("mousedown", function (ev) {
+      if (!state.outcodes.length) return;
+      dragging = true;
+      dragLastX = ev.clientX; dragLastY = ev.clientY;
+      svg.classList.add("dragging");
+    });
+    window.addEventListener("mousemove", function (ev) {
+      if (!dragging) return;
+      var dx = ev.clientX - dragLastX, dy = ev.clientY - dragLastY;
+      if (dx === 0 && dy === 0) return;
+      dragLastX = ev.clientX; dragLastY = ev.clientY;
+      panMapByPixels(dx, dy, svg.getBoundingClientRect());
+    });
+    window.addEventListener("mouseup", function () {
+      if (dragging) { dragging = false; svg.classList.remove("dragging"); }
+    });
+  }
+
   // ---------------- rendering: table ----------------
   function sortedOutcodes(list) {
     list = list.slice();
     var key = state.sortKey, dir = state.sortDir === "asc" ? 1 : -1;
     list.sort(function (a, b) {
       var av, bv;
-      if (key === "outcode") { av = a.outcode; bv = b.outcode; return dir * av.localeCompare(bv); }
+      if (key === "outcode" || key === "borough" || key === "geo_group") {
+        av = a[key] || ""; bv = b[key] || "";
+        return dir * av.localeCompare(bv);
+      }
       if (key === "total_score") { av = a.total_score; bv = b.total_score; }
       else {
         av = (a.categories[key] || {}).normalized_score;
@@ -676,6 +913,8 @@
 
   // ---------------- rendering: filters ----------------
   function renderFilters() {
+    var groupSelect = document.getElementById("geoGroupSelect");
+    if (groupSelect) groupSelect.value = state.geoGroupFilter;
     var bar = document.getElementById("filterBar");
     bar.innerHTML = "";
     var cols = filterableColumns();
@@ -761,6 +1000,40 @@
     });
   }
 
+  function wirePresetBar() {
+    document.getElementById("geoGroupSelect").addEventListener("change", function (ev) {
+      state.geoGroupFilter = ev.target.value;
+      state.currentPage = 1;
+      renderTable();
+      renderMap();
+    });
+
+    function applyPreset(filters, geoGroupFilter) {
+      state.filters = filters;
+      state.geoGroupFilter = geoGroupFilter;
+      state.currentPage = 1;
+      renderFilters();
+      renderTable();
+      renderMap();
+    }
+
+    document.getElementById("presetHomeCounties").addEventListener("click", function () {
+      applyPreset([{ key: travelKey("Zig Zag Building"), op: "<", value: "60" }], "Home Counties");
+    });
+    document.getElementById("presetGrammar").addEventListener("click", function () {
+      applyPreset(
+        [
+          { key: travelKey("Zig Zag Building"), op: "<", value: "60" },
+          { key: "grammar_schools", op: ">", value: "1" }
+        ],
+        "All"
+      );
+    });
+    document.getElementById("presetClear").addEventListener("click", function () {
+      applyPreset([], "All");
+    });
+  }
+
   // ---------------- rendering: pagination footer ----------------
   function renderFooter(total, pag) {
     var footer = document.getElementById("tableFooter");
@@ -829,7 +1102,7 @@
 
   function renderTableHead() {
     var row = document.getElementById("tableHeadRow");
-    var cols = [{ key: "outcode", label: "Outcode" }, { key: "total_score", label: "Total" }].concat(columns());
+    var cols = FIXED_COLUMNS.concat(columns());
     row.innerHTML = "";
     cols.forEach(function (c) {
       var th = document.createElement("th");
@@ -858,7 +1131,7 @@
     if (!state.outcodes.length) {
       var tr = document.createElement("tr");
       var td = document.createElement("td");
-      td.colSpan = cols.length + 2;
+      td.colSpan = cols.length + FIXED_COLUMNS.length;
       td.textContent = state.outcodesError ? ("Couldn't load results: " + state.outcodesError) : "No results yet.";
       td.style.color = "var(--muted)";
       tr.appendChild(td);
@@ -872,7 +1145,7 @@
     if (!sorted.length) {
       var tr2 = document.createElement("tr");
       var td2 = document.createElement("td");
-      td2.colSpan = cols.length + 2;
+      td2.colSpan = cols.length + FIXED_COLUMNS.length;
       td2.textContent = "No outcodes match the current filters.";
       td2.style.color = "var(--muted)";
       tr2.appendChild(td2);
@@ -892,6 +1165,14 @@
       var tdOut = document.createElement("td");
       tdOut.className = "outcode"; tdOut.textContent = o.outcode;
       tr.appendChild(tdOut);
+
+      var tdBorough = document.createElement("td");
+      tdBorough.textContent = o.borough || "–";
+      tr.appendChild(tdBorough);
+
+      var tdGroup = document.createElement("td");
+      tdGroup.textContent = o.geo_group || "–";
+      tr.appendChild(tdGroup);
 
       var tdScore = document.createElement("td");
       tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);
@@ -966,7 +1247,7 @@
     var tr = document.createElement("tr");
     tr.className = "drill-row";
     var td = document.createElement("td");
-    td.colSpan = columns().length + 2;
+    td.colSpan = columns().length + FIXED_COLUMNS.length;
 
     var panel = document.createElement("div");
     panel.className = "drill-panel";
@@ -1162,7 +1443,7 @@
       } catch (e3) { console.error(e3); }
       try {
         var body = document.getElementById("tableBody");
-        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + 2) + '" style="color:var(--muted)">' + escapeHtml(state.outcodesError) + '</td></tr>';
+        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + FIXED_COLUMNS.length) + '" style="color:var(--muted)">' + escapeHtml(state.outcodesError) + '</td></tr>';
       } catch (e4) { console.error(e4); }
     }
   }
@@ -1181,12 +1462,25 @@
     });
   }
 
+  // Map label points (borough/county centroids) -- a single small,
+  // rarely-changing document, so a plain one-shot get() rather than a
+  // listener is enough; missing/failed just means no labels draw.
+  function loadLabels(db) {
+    db.doc("results/latest_labels").get().then(function (snap) {
+      state.labels = (snap.exists && snap.data().labels) || [];
+      renderMap();
+    }, function (err) {
+      console.error("labels fetch error", err);
+    });
+  }
+
   function subscribeDb(db) {
     db.doc("config/current").onSnapshot(function (snap) {
       state.config = snap.exists ? snap.data() : DEFAULT_CONFIG;
       recomputeScores();
       renderSettings();
       renderFilters();
+      renderColorBySelect();
       renderTableHead();
       renderTable();
       renderMap();
@@ -1204,6 +1498,8 @@
         loadOutcodes(db);
       }
     }, function (err) { console.error("results meta snapshot error", err); });
+
+    loadLabels(db);
   }
 
   function wireButtons() {
@@ -1303,13 +1599,16 @@
     renderSettings();
     renderStatus();
     renderFilters();
+    renderColorBySelect();
     renderTableHead();
     renderTable();
     renderMap();
     renderLegend();
     wireButtons();
     wireFilterBar();
+    wirePresetBar();
     wireFooter();
+    wireMap();
 
     if (!window.claude || !window.claude.use) return;
     window.claude.use("db").then(function (db) {

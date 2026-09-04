@@ -170,6 +170,8 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "long": o.long,
                 "total_score": r.total_score,
                 "categories": categories,
+                "borough": o.borough,
+                "geo_group": o.geo_group,
             }
             (outcodes_dir / f"{r.outcode}.json").write_text(json.dumps(doc))
             outcode_docs.append(doc)
@@ -191,3 +193,43 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
         "outcodes_dir": str(outcodes_dir),
         "amenities_dir": str(amenities_dir),
     }
+
+
+def export_geo_labels(out_path: Path) -> dict:
+    """Writes the results/latest/labels doc: map label points for the
+    dashboard's county/town labels. One "town" label per borough
+    (centroid of that borough's outcodes) and one "county" label per
+    Home Counties region (centroid of that region's outcodes) --
+    "Greater London" is excluded from county labels since the borough
+    labels already cover it. Independent of any run_config (it only
+    depends on the outcodes table's borough/region columns from
+    postcodes.py's backfill_outcode_areas), so this doesn't need a
+    run_id and can be regenerated any time that backfill changes."""
+    with get_session() as session:
+        outcodes = list(session.scalars(select(Outcode).where(Outcode.borough.is_not(None))))
+
+    def _centroids(key_fn, kind: str) -> list[dict]:
+        groups: dict[str, list[Outcode]] = {}
+        for o in outcodes:
+            key = key_fn(o)
+            if key:
+                groups.setdefault(key, []).append(o)
+        return [
+            {
+                "name": name,
+                "lat": sum(o.lat for o in members) / len(members),
+                "long": sum(o.long for o in members) / len(members),
+                "kind": kind,
+                "outcode_count": len(members),
+            }
+            for name, members in groups.items()
+        ]
+
+    labels = _centroids(lambda o: o.borough, "town") + _centroids(
+        lambda o: o.region if o.region != "Greater London" else None, "county"
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"labels": labels}
+    out_path.write_text(json.dumps(doc))
+    return {"label_count": len(labels), "out_path": str(out_path)}

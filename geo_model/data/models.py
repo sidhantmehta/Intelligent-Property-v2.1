@@ -34,6 +34,16 @@ class Outcode(Base):
     lat: Mapped[float] = mapped_column(Float, nullable=False)
     long: Mapped[float] = mapped_column(Float, nullable=False)
     last_updated: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Local authority district (postcodes.io admin_district[0], e.g.
+    # "Guildford", "Hackney") and region (admin_district[0]'s region,
+    # e.g. "London", "South East") -- used for the table's Borough/Group
+    # columns and the map's labels. Nullable: only populated once
+    # backfill_outcode_areas() has run against this outcode.
+    borough: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Derived from region + borough (see postcodes.py): "Inner London",
+    # "Greater London", or "Home Counties".
+    geo_group: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class Amenity(Base):
