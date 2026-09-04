@@ -1118,8 +1118,15 @@
   }
 
   // ---------------- db wiring ----------------
+  // db.doc().data() is delivered frozen -- recomputeScores() below writes
+  // normalized_score/weight_applied/total_score onto each outcode in
+  // place, which throws against a frozen object ("Cannot assign to read
+  // only property"). Clone once here so the rest of the app owns
+  // ordinary, mutable copies instead of the frozen snapshot objects.
   function outcodesFromSnapshot(snap) {
-    return snap.docs.map(function (d) { return d.data(); }).filter(Boolean);
+    return snap.docs.map(function (d) { return d.data(); }).filter(Boolean).map(function (o) {
+      return JSON.parse(JSON.stringify(o));
+    });
   }
 
   // The outcomes collection (hundreds of documents) only ever changes when
