@@ -177,6 +177,8 @@ def ingest_epc_data(session: Session, outcodes: set[str], zip_path: Path) -> dic
                         property_type=ptype,
                         total_floor_area_m2=floor_area,
                         lodgement_date=lodgement_date,
+                        address1=(row.get("address1") or "").strip() or None,
+                        address2=(row.get("address2") or "").strip() or None,
                     )
                     post_town = (row.get("posttown") or "").strip()
                     if post_town:
@@ -197,6 +199,8 @@ def ingest_epc_data(session: Session, outcodes: set[str], zip_path: Path) -> dic
             set_={
                 "total_floor_area_m2": stmt.excluded.total_floor_area_m2,
                 "lodgement_date": stmt.excluded.lodgement_date,
+                "address1": stmt.excluded.address1,
+                "address2": stmt.excluded.address2,
             },
         )
         session.execute(stmt, chunk)

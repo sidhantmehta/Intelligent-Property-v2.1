@@ -17,7 +17,16 @@ from sqlalchemy import select
 
 from geo_model.config import ModelConfig, load_model_config
 from geo_model.data.db import get_session
-from geo_model.data.models import Amenity, Outcode, PostcodeSector, RunConfig, RunResult, SectorFloorArea, SectorPrice
+from geo_model.data.models import (
+    Amenity,
+    Outcode,
+    PostcodeSector,
+    RunConfig,
+    RunResult,
+    SectorFloorArea,
+    SectorMatchedPrice,
+    SectorPrice,
+)
 from geo_model.domain import scoring
 
 # How many of the nearest amenities to embed per outcode/category in the
@@ -196,6 +205,32 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "grain": f.estimate_grain,
             }
 
+        # Real matched-pair price/m2 (geo_model.domain.address_match +
+        # matched_pricing) -- an actual sold-price-to-floor-area ratio per
+        # dwelling, not two independently-computed medians divided.
+        # Overrides price_per_sqm below wherever it exists; the divided-
+        # medians figure stays as the fallback for sectors/types with no
+        # confident address match, so a viewer always sees the best number
+        # available rather than nothing.
+        matched_rows = list(
+            session.scalars(select(SectorMatchedPrice).where(SectorMatchedPrice.sector.in_(sectors_in_scope)))
+        )
+        matched_overall_by_sector: dict[str, dict[str, dict]] = {}
+        matched_bins_by_sector: dict[str, dict[str, list[dict]]] = {}
+        for m in matched_rows:
+            if m.size_bin_m2 is None:
+                matched_overall_by_sector.setdefault(m.sector, {})[m.property_type] = {
+                    "median_price_per_sqm": m.median_price_per_sqm,
+                    "matched_count": m.matched_count,
+                    "grain": m.estimate_grain,
+                }
+            else:
+                matched_bins_by_sector.setdefault(m.sector, {}).setdefault(m.property_type, []).append({
+                    "size_bin_m2": m.size_bin_m2,
+                    "median_price_per_sqm": m.median_price_per_sqm,
+                    "matched_count": m.matched_count,
+                })
+
         sector_docs = []
         for r in results:
             o = outcode_rows.get(r.outcode)
@@ -219,6 +254,21 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 entry["floor_area_grain"] = fa["grain"]
                 if entry.get("median_price") and fa["median_floor_area_m2"]:
                     entry["price_per_sqm"] = entry["median_price"] / fa["median_floor_area_m2"]
+                    entry["price_per_sqm_method"] = "divided_medians"
+
+            matched_overall = matched_overall_by_sector.get(r.sector, {})
+            for ptype, mo in matched_overall.items():
+                if mo["median_price_per_sqm"] is None:
+                    continue
+                entry = prices.setdefault(ptype, {})
+                entry["price_per_sqm"] = mo["median_price_per_sqm"]
+                entry["price_per_sqm_method"] = "matched_sales"
+                entry["price_per_sqm_grain"] = mo["grain"]
+                entry["price_per_sqm_matched_count"] = mo["matched_count"]
+            matched_bins = matched_bins_by_sector.get(r.sector, {})
+            for ptype, bins in matched_bins.items():
+                if ptype in prices:
+                    prices[ptype]["price_per_sqm_by_size"] = sorted(bins, key=lambda b: b["size_bin_m2"])
             doc = {
                 "sector": r.sector,
                 "outcode": r.outcode,

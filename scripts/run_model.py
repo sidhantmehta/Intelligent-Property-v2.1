@@ -133,6 +133,18 @@ def cmd_compute_sector_floor_area(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_match_epc_to_price_paid(args: argparse.Namespace) -> None:
+    scope = _read_scope(args.outcodes_file, args.all)
+    result = pipeline.match_epc_to_price_paid(outcode_filter=scope)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_compute_matched_sector_prices(args: argparse.Namespace) -> None:
+    scope = _read_scope(args.outcodes_file, args.all)
+    result = pipeline.compute_matched_sector_prices(outcode_filter=scope)
+    print(json.dumps(result, indent=2))
+
+
 def cmd_seed_legacy(args: argparse.Namespace) -> None:
     pipeline.ensure_db_ready()
     with get_session() as session:
@@ -258,6 +270,16 @@ def main() -> None:
     p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
     p.add_argument("--all", action="store_true", help="Scope to every outcode with ingested certificates")
     p.set_defaults(func=cmd_compute_sector_floor_area)
+
+    p = sub.add_parser("match-epc-to-price-paid", help="Join epc_certificates to price_paid_transactions by address (postcode + house/flat number) into matched_property_sales")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Scope to every outcode with ingested data")
+    p.set_defaults(func=cmd_match_epc_to_price_paid)
+
+    p = sub.add_parser("compute-matched-sector-prices", help="Aggregate matched_property_sales into sector_matched_prices (real price/m^2, not divided medians)")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Scope to every outcode with matched sales")
+    p.set_defaults(func=cmd_compute_matched_sector_prices)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),

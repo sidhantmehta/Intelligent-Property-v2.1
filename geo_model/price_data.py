@@ -100,7 +100,13 @@ def ingest_price_paid_data(session: Session, outcodes: set[str], years: list[int
             stmt = sqlite_insert(PricePaidTransaction)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["transaction_id"],
-                set_={"price": stmt.excluded.price, "date": stmt.excluded.date},
+                set_={
+                    "price": stmt.excluded.price,
+                    "date": stmt.excluded.date,
+                    "paon": stmt.excluded.paon,
+                    "saon": stmt.excluded.saon,
+                    "street": stmt.excluded.street,
+                },
             )
             session.execute(stmt, batch)
 
@@ -127,6 +133,9 @@ def ingest_price_paid_data(session: Session, outcodes: set[str], years: list[int
                 duration=row[6],
                 district=row[12].upper(),
                 ppd_category=row[14],
+                paon=row[7].strip() or None,
+                saon=row[8].strip() or None,
+                street=row[9].strip() or None,
             ))
             year_matched += 1
             if len(batch) >= 5000:

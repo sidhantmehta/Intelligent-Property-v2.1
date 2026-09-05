@@ -262,7 +262,7 @@
 
       <div class="card">
         <h2>Scores by postcode sector</h2>
-        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below; £/m² divides that by the median EPC floor area for the same type. A "*" means the sector had too few sales (or too few EPCs on file) and the outcode-level estimate was used instead.</div>
+        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below. £/m² is a real matched price — each Land Registry sale joined to its own EPC floor area by address — where a confident match exists; a "†" means no confident match was found and it falls back to dividing the sector's median price by its median EPC floor area (two separate figures, not a real per-house ratio). A "*" on either column means the sector had too few sales/matches and the outcode-level figure was used instead.</div>
         <div class="btn-row" id="presetBar" style="margin-top:10px;">
           <button class="btn" id="presetHomeCounties" type="button">Preset: &lt;60 min to Zig Zag + Home Counties</button>
           <button class="btn" id="presetGrammar" type="button">Preset: &lt;60 min to Zig Zag + grammar score &gt;1</button>
@@ -1445,11 +1445,33 @@
       var tdSqm = document.createElement("td");
       tdSqm.className = "price";
       if (priceInfo && priceInfo.price_per_sqm != null) {
-        tdSqm.textContent = formatPricePerSqm(priceInfo.price_per_sqm) + (priceInfo.floor_area_grain === "outcode" ? " *" : "");
-        tdSqm.title = (priceInfo.floor_area_grain === "outcode"
-          ? "Sector had too few EPCs on file — backed off to the outcode-level median floor area. "
-          : "") + "Median floor area " + Math.round(priceInfo.median_floor_area_m2) + " m² from "
-          + priceInfo.floor_area_certificate_count + " EPC certificate(s).";
+        // Two independent caveats can apply to this number, so they get
+        // two independent symbols: "*" = backed off to the outcode level
+        // (same meaning as the Price column's "*"), "†" = this is the
+        // ESTIMATED figure (sector's median price divided by its median
+        // EPC floor area, from unrelated properties) because no confident
+        // address match was found -- not a real per-house price/m². Its
+        // absence means the number came from actual matched sales.
+        var isMatched = priceInfo.price_per_sqm_method === "matched_sales";
+        var grain = isMatched ? priceInfo.price_per_sqm_grain : priceInfo.floor_area_grain;
+        var suffix = (grain === "outcode" ? " *" : "") + (isMatched ? "" : " †");
+        tdSqm.textContent = formatPricePerSqm(priceInfo.price_per_sqm) + suffix;
+
+        var titleParts = [];
+        if (isMatched) {
+          titleParts.push("From " + priceInfo.price_per_sqm_matched_count + " real matched sale(s) — each a Land Registry sale joined to its own EPC floor area by address.");
+          if (grain === "outcode") titleParts.push("Sector had too few matched sales — backed off to the outcode-level figure.");
+          if (priceInfo.price_per_sqm_by_size && priceInfo.price_per_sqm_by_size.length) {
+            titleParts.push("By size: " + priceInfo.price_per_sqm_by_size.map(function (b) {
+              return b.size_bin_m2 + "–" + (b.size_bin_m2 + 100) + "m²: " + formatPricePerSqm(b.median_price_per_sqm) + " (" + b.matched_count + ")";
+            }).join(", "));
+          }
+        } else {
+          titleParts.push("Estimated: this sector's median price ÷ its median EPC floor area — two separate figures, not a real per-house ratio (no confident address match found).");
+          if (grain === "outcode") titleParts.push("Sector had too few EPCs on file — backed off to the outcode-level median floor area.");
+          titleParts.push("Median floor area " + Math.round(priceInfo.median_floor_area_m2) + " m² from " + priceInfo.floor_area_certificate_count + " EPC certificate(s).");
+        }
+        tdSqm.title = titleParts.join(" ");
       } else {
         tdSqm.textContent = "–";
         tdSqm.title = "No EPC floor-area data for this property type.";

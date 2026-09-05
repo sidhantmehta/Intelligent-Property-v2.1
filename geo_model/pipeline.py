@@ -22,7 +22,7 @@ import datetime as dt
 import json
 from typing import Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from geo_model.data.models import (
     EpcCertificate,
     GrammarSchool,
     HpiIndex,
+    MatchedPropertySale,
     Outcode,
     PostcodeSector,
     PricePaidTransaction,
@@ -43,11 +44,12 @@ from geo_model.data.models import (
     RunResult,
     RunResultCategory,
     SectorFloorArea,
+    SectorMatchedPrice,
     SectorPrice,
     SectorTravelTime,
     TravelTime,
 )
-from geo_model.domain import floor_area, geo_cache, pricing, scoring
+from geo_model.domain import address_match, floor_area, geo_cache, matched_pricing, pricing, scoring
 from geo_model.logging_setup import get_logger, new_run_id, run_logger
 from geo_model.providers.base import GeoPoint, GeoProvider
 from geo_model.providers.here_maps import HereMapsProvider
@@ -471,6 +473,167 @@ def compute_sector_floor_area(outcode_filter: list[str] | None = None) -> dict:
         by_grain[e.grain] = by_grain.get(e.grain, 0) + 1
     log.info("compute_sector_floor_area complete: %d (sector, type) estimates, by grain: %s", len(estimates), by_grain)
     return {"run_id": run_id, "estimates": len(estimates), "by_grain": by_grain}
+
+
+def match_epc_to_price_paid(outcode_filter: list[str] | None = None) -> dict:
+    """Wires geo_model.domain.address_match to the DB: loads every EPC
+    certificate and Price Paid Data sale in scope, partitions both by
+    postcode (matching only ever happens within one postcode), and
+    replaces matched_property_sales with the fresh result. Re-run this
+    whenever epc_certificates or price_paid_transactions changes --
+    matching itself has no notion of staleness, it's a pure recompute
+    like compute_sector_prices/compute_sector_floor_area.
+
+    Loads full rows rather than ORM entities (plain tuples via a Core
+    select) since this scans on the order of millions of EPC rows --
+    ORM identity-map bookkeeping on that many objects is unnecessary
+    weight for a one-shot batch job that discards them all when it's done.
+    """
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+
+    with get_session() as session:
+        ppd_query = select(
+            PricePaidTransaction.transaction_id, PricePaidTransaction.postcode,
+            PricePaidTransaction.property_type, PricePaidTransaction.price,
+            PricePaidTransaction.date, PricePaidTransaction.district,
+            PricePaidTransaction.paon, PricePaidTransaction.saon, PricePaidTransaction.street,
+        )
+        if outcode_filter:
+            ppd_query = ppd_query.where(PricePaidTransaction.outcode.in_(outcode_filter))
+        ppd_by_postcode: dict[str, list[address_match.PpdRecord]] = {}
+        for row in session.execute(ppd_query):
+            ppd_by_postcode.setdefault(row.postcode, []).append(address_match.PpdRecord(
+                transaction_id=row.transaction_id, postcode=row.postcode, property_type=row.property_type,
+                price=row.price, date=row.date, district=row.district,
+                paon=row.paon, saon=row.saon, street=row.street,
+            ))
+        log.info("Loaded %d Price Paid transactions across %d postcodes", sum(len(v) for v in ppd_by_postcode.values()), len(ppd_by_postcode))
+
+        epc_query = select(
+            EpcCertificate.dwelling_key, EpcCertificate.postcode, EpcCertificate.sector,
+            EpcCertificate.outcode, EpcCertificate.property_type, EpcCertificate.total_floor_area_m2,
+            EpcCertificate.lodgement_date, EpcCertificate.address1, EpcCertificate.address2,
+        )
+        if outcode_filter:
+            epc_query = epc_query.where(EpcCertificate.outcode.in_(outcode_filter))
+        epc_by_postcode: dict[str, list[address_match.EpcRecord]] = {}
+        epc_scanned = 0
+        for row in session.execute(epc_query):
+            epc_scanned += 1
+            if row.postcode not in ppd_by_postcode:
+                continue  # never sold in our ingested Price Paid window -- can't match regardless
+            epc_by_postcode.setdefault(row.postcode, []).append(address_match.EpcRecord(
+                dwelling_key=row.dwelling_key, postcode=row.postcode, sector=row.sector, outcode=row.outcode,
+                property_type=row.property_type, total_floor_area_m2=row.total_floor_area_m2,
+                lodgement_date=row.lodgement_date, address1=row.address1, address2=row.address2,
+            ))
+        log.info("Scanned %d EPC certificates, %d share a postcode with at least one sale", epc_scanned, sum(len(v) for v in epc_by_postcode.values()))
+
+        matches: list[address_match.MatchedPair] = []
+        for postcode, epc_records in epc_by_postcode.items():
+            matches.extend(address_match.match_records(epc_records, ppd_by_postcode[postcode]))
+        log.info("Matched %d EPC<->Price Paid pairs across %d postcodes", len(matches), len(epc_by_postcode))
+
+        by_confidence: dict[str, int] = {}
+        for m in matches:
+            by_confidence[m.confidence] = by_confidence.get(m.confidence, 0) + 1
+        log.info("Match confidence breakdown: %s", by_confidence)
+
+        session.execute(delete(MatchedPropertySale))
+        rows = [
+            dict(
+                dwelling_key=m.dwelling_key, transaction_id=m.transaction_id, sector=m.sector, outcode=m.outcode,
+                property_type=m.property_type, total_floor_area_m2=m.total_floor_area_m2, sale_price=m.sale_price,
+                sale_date=m.sale_date, lodgement_date=m.lodgement_date, confidence=m.confidence, match_note=m.match_note,
+            )
+            for m in matches
+        ]
+        for i in range(0, len(rows), 5000):
+            session.execute(MatchedPropertySale.__table__.insert(), rows[i:i + 5000])
+        session.commit()
+
+    return {"run_id": run_id, "matched_pairs": len(matches), "by_confidence": by_confidence}
+
+
+def compute_matched_sector_prices(outcode_filter: list[str] | None = None) -> dict:
+    """Wires geo_model.domain.matched_pricing to the DB: loads usable-
+    confidence MatchedPropertySale rows within the primary window (same
+    window/backoff conventions as compute_sector_prices) plus the full
+    HpiIndex, computes a real matched-pair median price-per-m2 per
+    (sector, property_type[, size_bin_m2]), and upserts sector_matched_prices.
+    Run after match_epc_to_price_paid(); like compute_sector_prices, this
+    is a maintenance step, not part of run_model."""
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+    now = dt.date.today()
+    window_start = now - dt.timedelta(days=pricing.PRIMARY_WINDOW_DAYS)
+
+    with get_session() as session:
+        # MatchedPropertySale doesn't duplicate district (it's a
+        # PricePaidTransaction attribute) -- join it in directly rather
+        # than storing it redundantly on every matched row.
+        query = (
+            select(
+                MatchedPropertySale.sector, MatchedPropertySale.outcode, MatchedPropertySale.property_type,
+                MatchedPropertySale.total_floor_area_m2, MatchedPropertySale.sale_price,
+                MatchedPropertySale.sale_date, MatchedPropertySale.confidence,
+                PricePaidTransaction.district,
+            )
+            .join(PricePaidTransaction, PricePaidTransaction.transaction_id == MatchedPropertySale.transaction_id)
+            .where(
+                MatchedPropertySale.sale_date >= window_start,
+                MatchedPropertySale.confidence.in_(matched_pricing.USABLE_CONFIDENCE),
+            )
+        )
+        if outcode_filter:
+            query = query.where(MatchedPropertySale.outcode.in_(outcode_filter))
+        sales = [
+            matched_pricing.MatchedSale(
+                sector=row.sector, outcode=row.outcode, property_type=row.property_type,
+                total_floor_area_m2=row.total_floor_area_m2, sale_price=row.sale_price,
+                sale_date=row.sale_date, district=row.district, confidence=row.confidence,
+            )
+            for row in session.execute(query)
+        ]
+        log.info("Loaded %d usable matched sales within the %d-day window", len(sales), pricing.PRIMARY_WINDOW_DAYS)
+
+        hpi_rows = session.scalars(select(HpiIndex)).all()
+        hpi_by_district_month: dict[tuple[str, dt.date], dict[str, float | None]] = {}
+        latest_month = None
+        for h in hpi_rows:
+            hpi_by_district_month[(h.district, h.month)] = {
+                "index_all": h.index_all, "index_detached": h.index_detached,
+                "index_semi": h.index_semi, "index_terraced": h.index_terraced, "index_flat": h.index_flat,
+            }
+            if latest_month is None or h.month > latest_month:
+                latest_month = h.month
+        if latest_month is None:
+            raise RuntimeError("hpi_index is empty -- run `ingest-price-data` first")
+
+        estimates = matched_pricing.estimate_price_per_sqm(sales, hpi_by_district_month, as_of_month=latest_month)
+
+        session.execute(delete(SectorMatchedPrice))
+        for e in estimates:
+            if e.grain == "none":
+                continue
+            session.execute(SectorMatchedPrice.__table__.insert(), dict(
+                sector=e.key, property_type=e.property_type, size_bin_m2=e.size_bin_m2,
+                median_price_per_sqm=e.median_price_per_sqm, matched_count=e.matched_count,
+                estimate_grain=e.grain, computed_at=dt.datetime.now(dt.timezone.utc),
+            ))
+        session.commit()
+
+    by_grain: dict[str, int] = {}
+    overall_count = 0
+    for e in estimates:
+        if e.size_bin_m2 is None:
+            by_grain[e.grain] = by_grain.get(e.grain, 0) + 1
+            overall_count += 1
+    log.info("compute_matched_sector_prices complete: %d overall estimates, by grain: %s, %d size-bin estimates", overall_count, by_grain, len(estimates) - overall_count)
+    return {"run_id": run_id, "overall_estimates": overall_count, "by_grain": by_grain, "size_bin_estimates": len(estimates) - overall_count}
 
 
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:

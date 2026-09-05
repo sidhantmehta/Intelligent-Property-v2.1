@@ -267,6 +267,14 @@ class PricePaidTransaction(Base):
     duration: Mapped[str] = mapped_column(String(1), nullable=False)  # F = freehold, L = leasehold
     district: Mapped[str] = mapped_column(String(128), nullable=False)  # matches HpiIndex.district
     ppd_category: Mapped[str] = mapped_column(String(1), nullable=False)  # A = standard sale, B = additional (repossession/BTL panel/etc)
+    # Raw address components -- not used for sector/outcode (postcode
+    # already gives us that), kept so geo_model.domain.address_match can
+    # join a sale to its EPC certificate without a shared ID (Price Paid
+    # Data carries no UPRN). paon is usually a house number but can be a
+    # house name ("The Cottage"); saon is the flat/unit qualifier.
+    paon: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    saon: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class HpiIndex(Base):
@@ -330,6 +338,12 @@ class EpcCertificate(Base):
     property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F (mapped from EPC's PROPERTY_TYPE+BUILT_FORM)
     total_floor_area_m2: Mapped[float] = mapped_column(Float, nullable=False)
     lodgement_date: Mapped[dt.date] = mapped_column(nullable=False, index=True)
+    # Raw address lines -- address1 is usually the flat/unit qualifier (e.g.
+    # "Flat 4") when there is one, address2 the house number + street (e.g.
+    # "44 Shoot-Up Hill"). Kept so geo_model.domain.address_match can join
+    # this certificate to its Price Paid Data sale without a shared ID.
+    address1: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    address2: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
 class SectorFloorArea(Base):
@@ -373,3 +387,64 @@ class GrammarSchool(Base):
     long: Mapped[float | None] = mapped_column(Float, nullable=True)
     intake_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     geocoded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MatchedPropertySale(Base):
+    """One EPC certificate joined to the Price Paid Data sale of the same
+    dwelling, produced by geo_model.domain.address_match. Price Paid Data
+    carries no UPRN, so the join is done on postcode + a normalized house
+    number (+ flat/unit qualifier for flats) rather than a shared ID --
+    ``confidence`` records how sure that match is, and rows below
+    "flat_match_fuzzy" are kept here (not silently dropped) specifically so
+    a low-confidence match can be looked up and checked later rather than
+    only ever seen as a mysteriously-off aggregate. Only "house_match",
+    "flat_match_exact", and "flat_match_fuzzy" rows feed the price-per-m2
+    aggregation (geo_model.domain.matched_pricing); "ambiguous" rows are
+    stored for troubleshooting but never used in a computed estimate."""
+
+    __tablename__ = "matched_property_sales"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dwelling_key: Mapped[str] = mapped_column(String(128), ForeignKey("epc_certificates.dwelling_key"), nullable=False, index=True)
+    transaction_id: Mapped[str] = mapped_column(String(64), ForeignKey("price_paid_transactions.transaction_id"), nullable=False, index=True)
+    sector: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    outcode: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F -- from the EPC side
+    total_floor_area_m2: Mapped[float] = mapped_column(Float, nullable=False)
+    sale_price: Mapped[int] = mapped_column(Integer, nullable=False)  # raw, not HPI-adjusted (done at aggregation time)
+    sale_date: Mapped[dt.date] = mapped_column(nullable=False)
+    lodgement_date: Mapped[dt.date] = mapped_column(nullable=False)
+    # "house_match": unique postcode+house-number match, not a flat.
+    # "flat_match_exact": postcode+house-number+flat-id matched cleanly.
+    # "flat_match_fuzzy": flat-id matched only after non-trivial text
+    #   cleanup (e.g. "GROUND FLOOR FLAT" vs "FLAT G") -- used, but worth
+    #   spot-checking if a sector's number looks off.
+    # "ambiguous": more than one plausible candidate on one side that
+    #   couldn't be disambiguated -- stored, never aggregated.
+    confidence: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    match_note: Mapped[str | None] = mapped_column(String(256), nullable=True)  # why it's ambiguous/fuzzy, for troubleshooting
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SectorMatchedPrice(Base):
+    """Computed (not raw) price-per-m2 estimate for one postcode sector +
+    property type, built directly from MatchedPropertySale rows (real
+    floor-area-to-sale-price pairs) rather than dividing two independently
+    computed medians the way SectorPrice/SectorFloorArea are combined at
+    export time. ``size_bin_m2`` is the lower bound of a 100m2 bucket
+    (0, 100, 200, ...) when there were enough matched pairs in that bucket
+    to report one, else NULL for the sector+type's overall figure."""
+
+    __tablename__ = "sector_matched_prices"
+    __table_args__ = (
+        UniqueConstraint("sector", "property_type", "size_bin_m2", name="uq_sector_matched_price_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector: Mapped[str] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=False, index=True)
+    property_type: Mapped[str] = mapped_column(String(1), nullable=False)  # D/S/T/F
+    size_bin_m2: Mapped[int | None] = mapped_column(Integer, nullable=True)  # NULL = overall (not broken out by size)
+    median_price_per_sqm: Mapped[float | None] = mapped_column(Float, nullable=True)  # HPI-adjusted to today's-equivalent
+    matched_count: Mapped[int] = mapped_column(Integer, nullable=False)  # matched pairs actually used (sector- or outcode-level)
+    estimate_grain: Mapped[str] = mapped_column(String(16), nullable=False)  # "sector" | "outcode" | "none"
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

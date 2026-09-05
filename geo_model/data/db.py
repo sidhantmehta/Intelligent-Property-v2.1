@@ -28,6 +28,11 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("outcodes", "geo_group", "VARCHAR(32)"),
     ("run_results", "sector", "VARCHAR(8)"),
     ("postcode_sectors", "town", "VARCHAR(64)"),
+    ("price_paid_transactions", "paon", "VARCHAR(128)"),
+    ("price_paid_transactions", "saon", "VARCHAR(128)"),
+    ("price_paid_transactions", "street", "VARCHAR(128)"),
+    ("epc_certificates", "address1", "VARCHAR(256)"),
+    ("epc_certificates", "address2", "VARCHAR(256)"),
 ]
 
 
