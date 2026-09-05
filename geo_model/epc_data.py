@@ -24,12 +24,14 @@ import io
 import os
 import urllib.request
 import zipfile
+from collections import Counter
 from pathlib import Path
 
+from sqlalchemy import update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from geo_model.data.models import EpcCertificate
+from geo_model.data.models import EpcCertificate, PostcodeSector
 from geo_model.logging_setup import get_logger
 from geo_model.price_data import outcode_of, sector_of
 
@@ -104,7 +106,15 @@ def ingest_epc_data(session: Session, outcodes: set[str], zip_path: Path) -> dic
     dwelling into epc_certificates -- deduped by dwelling_key, keeping
     whichever record has the latest lodgement_date if the same dwelling
     was assessed more than once (EPC_CERTIFICATES has no natural primary
-    key across the whole file the way PPD's transaction_id does)."""
+    key across the whole file the way PPD's transaction_id does).
+
+    Also derives each sector's Royal Mail post town (e.g. "Gerrards
+    Cross") from the certificates' ``posttown`` column -- the most common
+    value among that sector's dwellings -- and writes it straight to
+    postcode_sectors.town. This is computed transiently from the CSV scan
+    rather than stored per-dwelling: nothing else needs post town at
+    dwelling grain, so persisting it on every one of ~6M epc_certificates
+    rows would be pure overhead."""
     per_year: dict[int, dict] = {}
     total_matched = 0
     # Newest-first within a dwelling: the batched upsert below applies
@@ -114,6 +124,9 @@ def ingest_epc_data(session: Session, outcodes: set[str], zip_path: Path) -> dic
     # of order. Instead track the best (latest lodgement_date) row per
     # dwelling_key in memory across the whole scan, then write once.
     best_by_dwelling: dict[str, dict] = {}
+    # Parallel to best_by_dwelling, keyed the same way -- kept separate
+    # since post_town isn't an EpcCertificate column (see docstring above).
+    town_by_dwelling: dict[str, str] = {}
 
     with zipfile.ZipFile(zip_path) as zf:
         names = {n for n in zf.namelist() if n.startswith("certificates-")}
@@ -165,6 +178,11 @@ def ingest_epc_data(session: Session, outcodes: set[str], zip_path: Path) -> dic
                         total_floor_area_m2=floor_area,
                         lodgement_date=lodgement_date,
                     )
+                    post_town = (row.get("posttown") or "").strip()
+                    if post_town:
+                        town_by_dwelling[key] = post_town
+                    else:
+                        town_by_dwelling.pop(key, None)
                     year_matched += 1
             logger.info("EPC %s: %d rows scanned, %d matched our scope", name, year_total, year_matched)
             per_year[year] = {"scanned": year_total, "matched": year_matched}
@@ -184,5 +202,24 @@ def ingest_epc_data(session: Session, outcodes: set[str], zip_path: Path) -> dic
         session.execute(stmt, chunk)
     session.commit()
 
+    sector_town_votes: dict[str, Counter] = {}
+    for dwelling_key, cert in best_by_dwelling.items():
+        town = town_by_dwelling.get(dwelling_key)
+        if not town:
+            continue
+        sector_town_votes.setdefault(cert["sector"], Counter())[town] += 1
+    dominant_town_by_sector = {
+        sector: votes.most_common(1)[0][0] for sector, votes in sector_town_votes.items()
+    }
+    for sector, town in dominant_town_by_sector.items():
+        session.execute(update(PostcodeSector).where(PostcodeSector.sector == sector).values(town=town))
+    session.commit()
+
     logger.info("EPC ingest: %d unique dwellings in scope out of %d scanned rows", len(best_by_dwelling), total_matched)
-    return {"per_year": per_year, "total_scanned_matched": total_matched, "unique_dwellings": len(best_by_dwelling)}
+    logger.info("EPC ingest: derived post town for %d sectors", len(dominant_town_by_sector))
+    return {
+        "per_year": per_year,
+        "total_scanned_matched": total_matched,
+        "unique_dwellings": len(best_by_dwelling),
+        "sectors_with_town": len(dominant_town_by_sector),
+    }

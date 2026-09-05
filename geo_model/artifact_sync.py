@@ -228,6 +228,7 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "categories": categories,
                 "borough": o.borough,
                 "geo_group": o.geo_group,
+                "town": ps.town,
                 "prices": prices,
             }
             (sectors_dir / f"{sector_doc_id(r.sector)}.json").write_text(json.dumps(doc))

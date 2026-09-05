@@ -137,13 +137,18 @@
   /* ---------- table filters / pagination ---------- */
   .filter-bar { display: flex; flex-direction: column; gap: 6px; }
   .filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .filter-row select, .filter-row input[type=number] {
+  .filter-row select, .filter-row input[type=number], .filter-row input[type=text] {
     padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2);
     color: var(--ink); font-size: 12px; font-family: var(--font-mono);
   }
   .filter-row input[type=number] { width: 90px; }
+  .filter-row input[type=text] { width: 130px; }
   .filter-row .remove { background: none; border: none; color: var(--crit); cursor: pointer; font-size: 13px; padding: 2px 4px; }
   .filter-empty { font-size: 12px; color: var(--muted); }
+  .compare-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
+  .compare-bar .sep { width: 1px; height: 16px; background: var(--border); }
+  .compare-bar label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  td.select-col, th.select-col { width: 1%; padding-right: 4px; }
   .table-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--ink-2); }
   .table-footer .pager { display: flex; align-items: center; gap: 8px; }
   .table-footer select {
@@ -279,7 +284,16 @@
             <option value="D">Detached</option>
           </select>
         </div>
+        <div class="filter-row" style="margin-top:6px;">
+          <label for="sectorSearchInput" style="font-size:12px;color:var(--ink-2);">Sector</label>
+          <input type="text" id="sectorSearchInput" placeholder="e.g. SW11 1">
+          <label for="outcodeSearchInput" style="font-size:12px;color:var(--ink-2);margin-left:8px;">Outcode</label>
+          <input type="text" id="outcodeSearchInput" placeholder="e.g. SW11">
+          <label for="townSearchInput" style="font-size:12px;color:var(--ink-2);margin-left:8px;">Town</label>
+          <input type="text" id="townSearchInput" placeholder="e.g. Gerrards Cross">
+        </div>
         <div class="filter-bar" id="filterBar" style="margin-top:10px;"></div>
+        <div class="compare-bar" id="compareBar" style="margin-top:10px;"></div>
         <div class="table-scroll" style="margin-top:10px;">
           <table id="resultsTable">
             <thead><tr id="tableHeadRow"></tr></thead>
@@ -392,7 +406,13 @@
     mapView: null,
     colorBy: "total_score",
     geoGroupFilter: "All",
-    propertyType: "F"
+    propertyType: "F",
+    sectorSearch: "",
+    outcodeSearch: "",
+    townSearch: "",
+    selected: new Set(),
+    compareList: [],
+    showCompareOnly: false
   };
 
   var FILTER_OPS = [
@@ -413,6 +433,7 @@
   var FIXED_COLUMNS = [
     { key: "sector", label: "Sector" },
     { key: "outcode", label: "Outcode" },
+    { key: "town", label: "Town" },
     { key: "borough", label: "Borough" },
     { key: "geo_group", label: "Group" },
     { key: "price", label: "Price" },
@@ -471,6 +492,21 @@
   function applyFilters(list) {
     if (state.geoGroupFilter && state.geoGroupFilter !== "All") {
       list = list.filter(function (o) { return o.geo_group === state.geoGroupFilter; });
+    }
+    if (state.sectorSearch) {
+      var sectorQ = state.sectorSearch.trim().toLowerCase();
+      if (sectorQ) list = list.filter(function (o) { return (o.sector || "").toLowerCase().indexOf(sectorQ) !== -1; });
+    }
+    if (state.outcodeSearch) {
+      var outcodeQ = state.outcodeSearch.trim().toLowerCase();
+      if (outcodeQ) list = list.filter(function (o) { return (o.outcode || "").toLowerCase().indexOf(outcodeQ) !== -1; });
+    }
+    if (state.townSearch) {
+      var townQ = state.townSearch.trim().toLowerCase();
+      if (townQ) list = list.filter(function (o) { return (o.town || "").toLowerCase().indexOf(townQ) !== -1; });
+    }
+    if (state.showCompareOnly) {
+      list = list.filter(function (o) { return state.compareList.indexOf(o.sector) !== -1; });
     }
     if (!state.filters.length) return list;
     return list.filter(function (o) {
@@ -945,7 +981,7 @@
     var key = state.sortKey, dir = state.sortDir === "asc" ? 1 : -1;
     list.sort(function (a, b) {
       var av, bv;
-      if (key === "sector" || key === "outcode" || key === "borough" || key === "geo_group") {
+      if (key === "sector" || key === "outcode" || key === "town" || key === "borough" || key === "geo_group") {
         av = a[key] || ""; bv = b[key] || "";
         return dir * av.localeCompare(bv);
       }
@@ -974,6 +1010,12 @@
     if (groupSelect) groupSelect.value = state.geoGroupFilter;
     var propertyTypeSelect = document.getElementById("propertyTypeSelect");
     if (propertyTypeSelect) propertyTypeSelect.value = state.propertyType;
+    var sectorSearchInput = document.getElementById("sectorSearchInput");
+    if (sectorSearchInput && sectorSearchInput.value !== state.sectorSearch) sectorSearchInput.value = state.sectorSearch;
+    var outcodeSearchInput = document.getElementById("outcodeSearchInput");
+    if (outcodeSearchInput && outcodeSearchInput.value !== state.outcodeSearch) outcodeSearchInput.value = state.outcodeSearch;
+    var townSearchInput = document.getElementById("townSearchInput");
+    if (townSearchInput && townSearchInput.value !== state.townSearch) townSearchInput.value = state.townSearch;
     var bar = document.getElementById("filterBar");
     bar.innerHTML = "";
     var cols = filterableColumns();
@@ -1098,6 +1140,107 @@
     });
   }
 
+  function wireSearchFilters() {
+    function bindTextFilter(id, field) {
+      document.getElementById(id).addEventListener("input", function (ev) {
+        state[field] = ev.target.value;
+        state.currentPage = 1;
+        renderTable();
+        renderMap();
+      });
+    }
+    bindTextFilter("sectorSearchInput", "sectorSearch");
+    bindTextFilter("outcodeSearchInput", "outcodeSearch");
+    bindTextFilter("townSearchInput", "townSearch");
+  }
+
+  // ---------------- rendering: compare list ----------------
+  function renderCompareBar() {
+    var bar = document.getElementById("compareBar");
+    bar.innerHTML = "";
+
+    var selectedLabel = document.createElement("span");
+    selectedLabel.textContent = state.selected.size + " selected";
+    bar.appendChild(selectedLabel);
+
+    var addBtn = document.createElement("button");
+    addBtn.type = "button"; addBtn.className = "btn"; addBtn.id = "addToCompareBtn";
+    addBtn.textContent = "Add to compare list";
+    addBtn.disabled = state.selected.size === 0;
+    bar.appendChild(addBtn);
+
+    var removeBtn = document.createElement("button");
+    removeBtn.type = "button"; removeBtn.className = "btn"; removeBtn.id = "removeFromCompareBtn";
+    removeBtn.textContent = "Remove from compare list";
+    removeBtn.disabled = state.selected.size === 0;
+    bar.appendChild(removeBtn);
+
+    var sep = document.createElement("span");
+    sep.className = "sep";
+    bar.appendChild(sep);
+
+    var compareLabel = document.createElement("span");
+    compareLabel.textContent = "Compare list: " + state.compareList.length;
+    bar.appendChild(compareLabel);
+
+    var showOnlyLabel = document.createElement("label");
+    var showOnlyCb = document.createElement("input");
+    showOnlyCb.type = "checkbox"; showOnlyCb.id = "compareOnlyToggle";
+    showOnlyCb.checked = state.showCompareOnly;
+    showOnlyCb.disabled = state.compareList.length === 0 && !state.showCompareOnly;
+    showOnlyLabel.appendChild(showOnlyCb);
+    showOnlyLabel.appendChild(document.createTextNode("Show only compare list"));
+    bar.appendChild(showOnlyLabel);
+
+    var clearBtn = document.createElement("button");
+    clearBtn.type = "button"; clearBtn.className = "btn"; clearBtn.id = "clearCompareBtn";
+    clearBtn.textContent = "Clear compare list";
+    clearBtn.disabled = state.compareList.length === 0;
+    bar.appendChild(clearBtn);
+  }
+
+  function saveCompareList() {
+    if (!state.db) return;
+    state.db.doc("compare/current").set({ sectors: state.compareList, updated_at: new Date().toISOString() });
+  }
+
+  function wireCompareBar() {
+    var bar = document.getElementById("compareBar");
+    bar.addEventListener("click", function (ev) {
+      if (ev.target.id === "addToCompareBtn") {
+        state.selected.forEach(function (s) {
+          if (state.compareList.indexOf(s) === -1) state.compareList.push(s);
+        });
+        state.selected.clear();
+        saveCompareList();
+        renderCompareBar();
+        renderTable();
+      } else if (ev.target.id === "removeFromCompareBtn") {
+        state.compareList = state.compareList.filter(function (s) { return !state.selected.has(s); });
+        state.selected.clear();
+        saveCompareList();
+        renderCompareBar();
+        renderTable();
+      } else if (ev.target.id === "clearCompareBtn") {
+        state.compareList = [];
+        state.showCompareOnly = false;
+        saveCompareList();
+        renderCompareBar();
+        state.currentPage = 1;
+        renderTable();
+        renderMap();
+      }
+    });
+    bar.addEventListener("change", function (ev) {
+      if (ev.target.id === "compareOnlyToggle") {
+        state.showCompareOnly = ev.target.checked;
+        state.currentPage = 1;
+        renderTable();
+        renderMap();
+      }
+    });
+  }
+
   // ---------------- rendering: pagination footer ----------------
   function renderFooter(total, pag) {
     var footer = document.getElementById("tableFooter");
@@ -1168,6 +1311,23 @@
     var row = document.getElementById("tableHeadRow");
     var cols = FIXED_COLUMNS.concat(columns());
     row.innerHTML = "";
+
+    var selectTh = document.createElement("th");
+    selectTh.className = "select-col";
+    var selectAllCb = document.createElement("input");
+    selectAllCb.type = "checkbox";
+    selectAllCb.id = "selectAllCheckbox";
+    selectAllCb.title = "Select all rows on this page";
+    selectAllCb.addEventListener("change", function () {
+      var pageSectors = paginate(visibleSectors()).slice.map(function (o) { return o.sector; });
+      pageSectors.forEach(function (s) {
+        if (selectAllCb.checked) state.selected.add(s); else state.selected.delete(s);
+      });
+      renderTable();
+    });
+    selectTh.appendChild(selectAllCb);
+    row.appendChild(selectTh);
+
     cols.forEach(function (c) {
       var th = document.createElement("th");
       th.textContent = c.label;
@@ -1195,12 +1355,13 @@
     if (!state.sectors.length) {
       var tr = document.createElement("tr");
       var td = document.createElement("td");
-      td.colSpan = cols.length + FIXED_COLUMNS.length;
+      td.colSpan = cols.length + FIXED_COLUMNS.length + 1;
       td.textContent = state.sectorsError ? ("Couldn't load results: " + state.sectorsError) : "No results yet.";
       td.style.color = "var(--muted)";
       tr.appendChild(td);
       body.appendChild(tr);
       document.getElementById("tableFooter").innerHTML = "";
+      renderCompareBar();
       return;
     }
 
@@ -1209,22 +1370,43 @@
     if (!sorted.length) {
       var tr2 = document.createElement("tr");
       var td2 = document.createElement("td");
-      td2.colSpan = cols.length + FIXED_COLUMNS.length;
+      td2.colSpan = cols.length + FIXED_COLUMNS.length + 1;
       td2.textContent = "No sectors match the current filters.";
       td2.style.color = "var(--muted)";
       tr2.appendChild(td2);
       body.appendChild(tr2);
       renderFooter(0, { slice: [], totalPages: 1, start: 0 });
+      renderCompareBar();
       return;
     }
 
     var pag = paginate(sorted);
     renderFooter(sorted.length, pag);
+    renderCompareBar();
+
+    var selectAllCb = document.getElementById("selectAllCheckbox");
+    if (selectAllCb) {
+      var pageSectors = pag.slice.map(function (o) { return o.sector; });
+      selectAllCb.checked = pageSectors.length > 0 && pageSectors.every(function (s) { return state.selected.has(s); });
+    }
 
     pag.slice.forEach(function (o) {
       var tr = document.createElement("tr");
       tr.className = o.sector === state.activeSector ? "active" : "";
       tr.addEventListener("click", function () { setActive(o.sector, false); });
+
+      var tdSelect = document.createElement("td");
+      tdSelect.className = "select-col";
+      var selectCb = document.createElement("input");
+      selectCb.type = "checkbox";
+      selectCb.checked = state.selected.has(o.sector);
+      selectCb.addEventListener("click", function (ev) { ev.stopPropagation(); });
+      selectCb.addEventListener("change", function () {
+        if (selectCb.checked) state.selected.add(o.sector); else state.selected.delete(o.sector);
+        renderCompareBar();
+      });
+      tdSelect.appendChild(selectCb);
+      tr.appendChild(tdSelect);
 
       var tdSector = document.createElement("td");
       tdSector.className = "outcode"; tdSector.textContent = o.sector;
@@ -1233,6 +1415,10 @@
       var tdOut = document.createElement("td");
       tdOut.textContent = o.outcode;
       tr.appendChild(tdOut);
+
+      var tdTown = document.createElement("td");
+      tdTown.textContent = o.town || "–";
+      tr.appendChild(tdTown);
 
       var tdBorough = document.createElement("td");
       tdBorough.textContent = o.borough || "–";
@@ -1343,7 +1529,7 @@
     var tr = document.createElement("tr");
     tr.className = "drill-row";
     var td = document.createElement("td");
-    td.colSpan = columns().length + FIXED_COLUMNS.length;
+    td.colSpan = columns().length + FIXED_COLUMNS.length + 1;
 
     var panel = document.createElement("div");
     panel.className = "drill-panel";
@@ -1539,7 +1725,7 @@
       } catch (e3) { console.error(e3); }
       try {
         var body = document.getElementById("tableBody");
-        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + FIXED_COLUMNS.length) + '" style="color:var(--muted)">' + escapeHtml(state.sectorsError) + '</td></tr>';
+        if (body) body.innerHTML = '<tr><td colspan="' + (columns().length + FIXED_COLUMNS.length + 1) + '" style="color:var(--muted)">' + escapeHtml(state.sectorsError) + '</td></tr>';
       } catch (e4) { console.error(e4); }
     }
   }
@@ -1619,6 +1805,18 @@
     }, function (err) { console.error("results meta snapshot error", err); });
 
     loadLabels(db);
+    loadCompareList(db);
+  }
+
+  // The compare list is a small, user-curated set of sectors to keep
+  // side-by-side; persisted the same way as config/current so it survives
+  // across sessions/devices rather than resetting on every page load.
+  function loadCompareList(db) {
+    db.doc("compare/current").onSnapshot(function (snap) {
+      state.compareList = (snap.exists && snap.data().sectors) || [];
+      renderCompareBar();
+      if (state.showCompareOnly) { renderTable(); renderMap(); }
+    }, function (err) { console.error("compare list snapshot error", err); });
   }
 
   function wireButtons() {
@@ -1726,6 +1924,8 @@
     wireButtons();
     wireFilterBar();
     wirePresetBar();
+    wireSearchFilters();
+    wireCompareBar();
     wireFooter();
     wireMap();
 

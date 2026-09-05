@@ -238,6 +238,12 @@ class PostcodeSector(Base):
     long: Mapped[float] = mapped_column(Float, nullable=False)
     postcode_count: Mapped[int] = mapped_column(Integer, nullable=False)  # how many real postcodes the centroid was averaged from
     last_updated: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Royal Mail post town (e.g. "Gerrards Cross"), taken as the most common
+    # `posttown` value among this sector's EPC certificates -- see
+    # geo_model.epc_data.ingest_epc_data(). Nullable: only populated once
+    # EPC ingestion has run and found at least one certificate in the
+    # sector with a post town on record.
+    town: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class PricePaidTransaction(Base):
