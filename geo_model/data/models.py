@@ -448,3 +448,43 @@ class SectorMatchedPrice(Base):
     matched_count: Mapped[int] = mapped_column(Integer, nullable=False)  # matched pairs actually used (sector- or outcode-level)
     estimate_grain: Mapped[str] = mapped_column(String(16), nullable=False)  # "sector" | "outcode" | "none"
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RailStation(Base):
+    """One National Rail station, from NaPTAN (the free, no-signup UK
+    government dataset of public transport access points -- see
+    geo_model.rail_stations). ``atco_code`` is NaPTAN's own identifier
+    (e.g. "9100PADTON") -- NOT a CRS code; the fares feed (once wired up)
+    brings its own station reference list keyed by CRS/NLC, matched to
+    these rows by name/location rather than by a shared code, since NaPTAN
+    doesn't carry CRS directly."""
+
+    __tablename__ = "rail_stations"
+
+    atco_code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    long: Mapped[float] = mapped_column(Float, nullable=False)
+    last_updated: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SectorStation(Base):
+    """The N closest rail stations to one postcode sector's centroid,
+    computed by geo_model.domain.stations from RailStation -- a sector's
+    "closest station" is rarely singular enough to price a commute from,
+    so every candidate within the top N is kept (rank 1 = closest), not
+    just the nearest, letting a viewer compare fares across alternatives
+    (e.g. a 10-minute-further station on a cheaper fare zone)."""
+
+    __tablename__ = "sector_stations"
+    __table_args__ = (
+        UniqueConstraint("sector", "station_atco_code", name="uq_sector_station_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector: Mapped[str] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=False, index=True)
+    station_atco_code: Mapped[str] = mapped_column(String(16), ForeignKey("rail_stations.atco_code"), nullable=False, index=True)
+    station_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    distance_miles: Mapped[float] = mapped_column(Float, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 = closest
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -39,6 +39,7 @@ from geo_model.data.models import (
     PostcodeSector,
     PricePaidTransaction,
     PrivateSchool,
+    RailStation,
     ReferencePoint as ReferencePointRow,
     RunConfig,
     RunResult,
@@ -46,10 +47,11 @@ from geo_model.data.models import (
     SectorFloorArea,
     SectorMatchedPrice,
     SectorPrice,
+    SectorStation,
     SectorTravelTime,
     TravelTime,
 )
-from geo_model.domain import address_match, floor_area, geo_cache, matched_pricing, pricing, scoring
+from geo_model.domain import address_match, floor_area, geo_cache, matched_pricing, pricing, scoring, stations as stations_domain
 from geo_model.logging_setup import get_logger, new_run_id, run_logger
 from geo_model.providers.base import GeoPoint, GeoProvider
 from geo_model.providers.here_maps import HereMapsProvider
@@ -634,6 +636,54 @@ def compute_matched_sector_prices(outcode_filter: list[str] | None = None) -> di
             overall_count += 1
     log.info("compute_matched_sector_prices complete: %d overall estimates, by grain: %s, %d size-bin estimates", overall_count, by_grain, len(estimates) - overall_count)
     return {"run_id": run_id, "overall_estimates": overall_count, "by_grain": by_grain, "size_bin_estimates": len(estimates) - overall_count}
+
+
+def compute_sector_stations(outcode_filter: list[str] | None = None) -> dict:
+    """Wires geo_model.domain.stations to the DB: loads every PostcodeSector
+    centroid (scoped, if given) and the full RailStation list (the whole
+    GB station set -- a sector near a scope boundary can have its nearest
+    station just outside it), computes each sector's N closest stations,
+    and replaces sector_stations with the fresh result. Re-run whenever
+    rail_stations changes (NaPTAN updates) or new sectors enter scope --
+    a pure recompute, same convention as compute_sector_prices."""
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+
+    with get_session() as session:
+        sector_query = select(PostcodeSector.sector, PostcodeSector.lat, PostcodeSector.long)
+        if outcode_filter:
+            sector_query = sector_query.where(PostcodeSector.outcode.in_(outcode_filter))
+        sector_centroids = [
+            stations_domain.SectorCentroid(sector=row.sector, lat=row.lat, long=row.long)
+            for row in session.execute(sector_query)
+        ]
+        log.info("Loaded %d postcode sector centroids", len(sector_centroids))
+
+        station_rows = [
+            stations_domain.StationRecord(atco_code=row.atco_code, name=row.name, lat=row.lat, long=row.long)
+            for row in session.execute(select(RailStation.atco_code, RailStation.name, RailStation.lat, RailStation.long))
+        ]
+        log.info("Loaded %d rail stations", len(station_rows))
+        if not station_rows:
+            raise RuntimeError("rail_stations is empty -- run `ingest-rail-stations` first")
+
+        matches = stations_domain.nearest_stations(sector_centroids, station_rows)
+
+        session.execute(delete(SectorStation).where(SectorStation.sector.in_([s.sector for s in sector_centroids])))
+        rows = [
+            dict(
+                sector=m.sector, station_atco_code=m.station_atco_code, station_name=m.station_name,
+                distance_miles=m.distance_miles, rank=m.rank,
+            )
+            for m in matches
+        ]
+        for i in range(0, len(rows), 5000):
+            session.execute(SectorStation.__table__.insert(), rows[i:i + 5000])
+        session.commit()
+
+    log.info("compute_sector_stations complete: %d sector<->station rows across %d sectors", len(matches), len(sector_centroids))
+    return {"run_id": run_id, "sector_station_rows": len(matches), "sectors": len(sector_centroids)}
 
 
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:

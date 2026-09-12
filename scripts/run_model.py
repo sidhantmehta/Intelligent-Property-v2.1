@@ -49,6 +49,7 @@ from geo_model.postcodes import backfill_outcode_areas, compute_sector_centroids
 from geo_model.epc_data import download_full_load_csv, ingest_epc_data  # noqa: E402
 from geo_model.price_data import ingest_hpi_index, ingest_price_paid_data  # noqa: E402
 from geo_model.private_schools import import_private_schools  # noqa: E402
+from geo_model.rail_stations import download_naptan_csv, ingest_rail_stations  # noqa: E402
 from geo_model.seed_legacy_data import seed_amenities_from_legacy_data  # noqa: E402
 from geo_model.usage_report import current_calendar_month_start, summarize_usage  # noqa: E402
 
@@ -142,6 +143,23 @@ def cmd_match_epc_to_price_paid(args: argparse.Namespace) -> None:
 def cmd_compute_matched_sector_prices(args: argparse.Namespace) -> None:
     scope = _read_scope(args.outcodes_file, args.all)
     result = pipeline.compute_matched_sector_prices(outcode_filter=scope)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_ingest_rail_stations(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    csv_path = args.csv_path
+    if csv_path is None:
+        csv_path = REPO_ROOT / "naptan-access-nodes.csv"
+        download_naptan_csv(csv_path)
+    with get_session() as session:
+        result = ingest_rail_stations(session, csv_path)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_compute_sector_stations(args: argparse.Namespace) -> None:
+    scope = _read_scope(args.outcodes_file, args.all)
+    result = pipeline.compute_sector_stations(outcode_filter=scope)
     print(json.dumps(result, indent=2))
 
 
@@ -280,6 +298,15 @@ def main() -> None:
     p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
     p.add_argument("--all", action="store_true", help="Scope to every outcode with matched sales")
     p.set_defaults(func=cmd_compute_matched_sector_prices)
+
+    p = sub.add_parser("ingest-rail-stations", help="Fetch the NaPTAN access-nodes CSV (free, no signup) and load active National Rail stations into rail_stations")
+    p.add_argument("--csv-path", type=Path, default=None, help="Path to an already-downloaded NaPTAN access-nodes CSV, to skip re-downloading the ~100MB file")
+    p.set_defaults(func=cmd_ingest_rail_stations)
+
+    p = sub.add_parser("compute-sector-stations", help="Find each postcode sector's N closest rail stations (sector_stations)")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Scope to every outcode with a computed sector centroid")
+    p.set_defaults(func=cmd_compute_sector_stations)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),
