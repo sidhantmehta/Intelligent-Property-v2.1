@@ -262,7 +262,7 @@
 
       <div class="card">
         <h2>Scores by postcode sector</h2>
-        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below. £/m² is a real matched price — each Land Registry sale joined to its own EPC floor area by address — where a confident match exists; a "†" means no confident match was found and it falls back to dividing the sector's median price by its median EPC floor area (two separate figures, not a real per-house ratio). A "*" on either column means the sector had too few sales/matches and the outcode-level figure was used instead.</div>
+        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below. £/m² is a real matched price — each Land Registry sale joined to its own EPC floor area by address — where a confident match exists; a "†" means no confident match was found and it falls back to dividing the sector's median price by its median EPC floor area (two separate figures, not a real per-house ratio). A "*" on either column means the sector had too few sales/matches and the outcode-level figure was used instead. Cheapest/priciest fare compare the sector's nearest stations' Monthly Season cost to the destination selected below (Anytime Day Return shown in the tooltip); a "†" means the monthly figure includes a Zones 1-6 Travelcard add-on (what most commuters from outside London actually buy) rather than being the plain rail-only fare.</div>
         <div class="btn-row" id="presetBar" style="margin-top:10px;">
           <button class="btn" id="presetHomeCounties" type="button">Preset: &lt;60 min to Zig Zag + Home Counties</button>
           <button class="btn" id="presetGrammar" type="button">Preset: &lt;60 min to Zig Zag + grammar score &gt;1</button>
@@ -283,6 +283,8 @@
             <option value="S">Semi-detached</option>
             <option value="D">Detached</option>
           </select>
+          <label for="fareRefPointSelect" style="font-size:12px;color:var(--ink-2);margin-left:8px;">Commute cost to</label>
+          <select id="fareRefPointSelect"></select>
         </div>
         <div class="filter-row" style="margin-top:6px;">
           <label for="sectorSearchInput" style="font-size:12px;color:var(--ink-2);">Sector</label>
@@ -407,6 +409,7 @@
     colorBy: "total_score",
     geoGroupFilter: "All",
     propertyType: "F",
+    fareRefPoint: null,
     sectorSearch: "",
     outcodeSearch: "",
     townSearch: "",
@@ -438,6 +441,8 @@
     { key: "geo_group", label: "Group" },
     { key: "price", label: "Price" },
     { key: "price_per_sqm", label: "£/m²" },
+    { key: "fare_cheapest", label: "Cheapest fare" },
+    { key: "fare_priciest", label: "Priciest fare" },
     { key: "total_score", label: "Total" }
   ];
 
@@ -468,6 +473,22 @@
     return "£" + Math.round(n).toLocaleString();
   }
 
+  // Monthly Season is the headline recurring-cost figure; "extreme" is
+  // the cheapest/priciest of a sector's nearest stations for the
+  // reference point selected below -- see artifact_sync.py's
+  // _fares_for_sector for how that reduction happens server-side.
+  function fareExtremeValue(o, which) {
+    var f = o.fares && state.fareRefPoint && o.fares[state.fareRefPoint];
+    var e = f && f[which];
+    return (e && e.monthly_pence != null) ? e.monthly_pence / 100 : null;
+  }
+
+  function formatFarePence(pence) {
+    if (pence == null) return "–";
+    var pounds = pence / 100;
+    return "£" + (pounds % 1 === 0 ? pounds.toFixed(0) : pounds.toFixed(2));
+  }
+
   function columns() {
     var cols = [];
     (state.config ? state.config.amenity_categories : DEFAULT_CONFIG.amenity_categories).forEach(function (c) {
@@ -480,11 +501,17 @@
   }
 
   function filterableColumns() {
-    return [{ key: "total_score", label: "Total" }].concat(columns());
+    return [
+      { key: "total_score", label: "Total" },
+      { key: "fare_cheapest", label: "Cheapest fare (£/month)" },
+      { key: "fare_priciest", label: "Priciest fare (£/month)" }
+    ].concat(columns());
   }
 
   function cellValue(o, key) {
     if (key === "total_score") return o.total_score;
+    if (key === "fare_cheapest") return fareExtremeValue(o, "cheapest");
+    if (key === "fare_priciest") return fareExtremeValue(o, "priciest");
     var cell = o.categories[key];
     return cell ? cell.raw_score : null;
   }
@@ -994,6 +1021,11 @@
         av = pricePerSqmValue(a); bv = pricePerSqmValue(b);
         av = av == null ? -1 : av; bv = bv == null ? -1 : bv;
       }
+      else if (key === "fare_cheapest" || key === "fare_priciest") {
+        var which = key === "fare_cheapest" ? "cheapest" : "priciest";
+        av = fareExtremeValue(a, which); bv = fareExtremeValue(b, which);
+        av = av == null ? -1 : av; bv = bv == null ? -1 : bv;
+      }
       else {
         av = (a.categories[key] || {}).normalized_score;
         bv = (b.categories[key] || {}).normalized_score;
@@ -1010,6 +1042,20 @@
     if (groupSelect) groupSelect.value = state.geoGroupFilter;
     var propertyTypeSelect = document.getElementById("propertyTypeSelect");
     if (propertyTypeSelect) propertyTypeSelect.value = state.propertyType;
+    var fareRefPointSelect = document.getElementById("fareRefPointSelect");
+    if (fareRefPointSelect) {
+      var refPoints = (state.config ? state.config.reference_points : DEFAULT_CONFIG.reference_points) || [];
+      if (!state.fareRefPoint || !refPoints.some(function (r) { return r.name === state.fareRefPoint; })) {
+        state.fareRefPoint = refPoints.length ? refPoints[0].name : null;
+      }
+      fareRefPointSelect.innerHTML = "";
+      refPoints.forEach(function (r) {
+        var opt = document.createElement("option");
+        opt.value = r.name; opt.textContent = r.name;
+        if (r.name === state.fareRefPoint) opt.selected = true;
+        fareRefPointSelect.appendChild(opt);
+      });
+    }
     var sectorSearchInput = document.getElementById("sectorSearchInput");
     if (sectorSearchInput && sectorSearchInput.value !== state.sectorSearch) sectorSearchInput.value = state.sectorSearch;
     var outcodeSearchInput = document.getElementById("outcodeSearchInput");
@@ -1111,6 +1157,11 @@
 
     document.getElementById("propertyTypeSelect").addEventListener("change", function (ev) {
       state.propertyType = ev.target.value;
+      renderTable();
+    });
+
+    document.getElementById("fareRefPointSelect").addEventListener("change", function (ev) {
+      state.fareRefPoint = ev.target.value;
       renderTable();
     });
 
@@ -1477,6 +1528,27 @@
         tdSqm.title = "No EPC floor-area data for this property type.";
       }
       tr.appendChild(tdSqm);
+
+      ["cheapest", "priciest"].forEach(function (which) {
+        var td = document.createElement("td");
+        td.className = "price";
+        var f = o.fares && state.fareRefPoint && o.fares[state.fareRefPoint];
+        var e = f && f[which];
+        if (e && e.monthly_pence != null) {
+          var isTravelcard = e.monthly_basis === "zones_1_6_travelcard";
+          td.textContent = formatFarePence(e.monthly_pence) + "/mo" + (isTravelcard ? " †" : "");
+          var titleParts = [e.station + " (rank " + e.station_rank + " nearest)"];
+          titleParts.push(isTravelcard
+            ? "Includes a Zones 1-6 Travelcard add-on — what most commuters from outside London actually buy alongside their rail ticket."
+            : "Rail-only fare — this station is already inside the TfL zones, no Travelcard add-on needed.");
+          if (e.day_return_pence != null) titleParts.push("Anytime Day Return: " + formatFarePence(e.day_return_pence) + ".");
+          td.title = titleParts.join(" ");
+        } else {
+          td.textContent = "–";
+          td.title = "No fare data for this reference point.";
+        }
+        tr.appendChild(td);
+      });
 
       var tdScore = document.createElement("td");
       tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);

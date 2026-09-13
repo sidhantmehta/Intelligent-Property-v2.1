@@ -26,6 +26,7 @@ from geo_model.data.models import (
     SectorFloorArea,
     SectorMatchedPrice,
     SectorPrice,
+    SectorStationFare,
 )
 from geo_model.domain import scoring
 
@@ -118,7 +119,12 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
     numbers + price, no amenity names/distances) is what makes the
     realtime subscription work reliably again -- amenities stay keyed by
     the shared PARENT outcode (not duplicated per sector), so this
-    collection is still one doc per outcode (~700), not per sector."""
+    collection is still one doc per outcode (~700), not per sector.
+
+    Rail fares (geo_model.pipeline.compute_sector_station_fares) follow
+    the same "lean" principle: only the cheapest and priciest of a
+    sector's nearest stations per reference point are embedded (see
+    _fares_for_sector), not every candidate station's quote."""
     out_dir.mkdir(parents=True, exist_ok=True)
     sectors_dir = out_dir / "sectors"
     sectors_dir.mkdir(parents=True, exist_ok=True)
@@ -231,6 +237,43 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                     "matched_count": m.matched_count,
                 })
 
+        # Rail fare quotes (geo_model.pipeline.compute_sector_station_fares)
+        # -- one row per (sector, nearest station, reference point). The
+        # frontend doesn't need every candidate station's fare, only the
+        # cheapest and priciest per reference point (so a viewer can spot
+        # a nearby station on a materially different fare without opening
+        # a drill-down), so that reduction happens here rather than
+        # shipping all ~5 stations' worth of quotes to every sector doc.
+        fare_rows = list(
+            session.scalars(select(SectorStationFare).where(SectorStationFare.sector.in_(sectors_in_scope)))
+        )
+        fares_by_sector: dict[str, dict[str, list[SectorStationFare]]] = {}
+        for f in fare_rows:
+            fares_by_sector.setdefault(f.sector, {}).setdefault(f.reference_point_name, []).append(f)
+
+        def _fare_extreme(rows: list[SectorStationFare]) -> dict | None:
+            return {
+                "station": rows[0].station_name,
+                "station_rank": rows[0].station_rank,
+                "day_return_pence": rows[0].anytime_day_return_pence,
+                "monthly_pence": rows[0].monthly_season_pence,
+                "monthly_basis": rows[0].monthly_fare_basis,
+            }
+
+        def _fares_for_sector(sector: str) -> dict:
+            out: dict[str, dict] = {}
+            for ref_name, rows in fares_by_sector.get(sector, {}).items():
+                # Ranked by Monthly Season (the headline recurring-cost
+                # figure) -- a station with no monthly figure at all can't
+                # be compared this way, so it's excluded from cheapest/
+                # priciest even if it has an Anytime Day Return.
+                priced = [r for r in rows if r.monthly_season_pence is not None]
+                if not priced:
+                    continue
+                priced.sort(key=lambda r: r.monthly_season_pence)
+                out[ref_name] = {"cheapest": _fare_extreme(priced[:1]), "priciest": _fare_extreme(priced[-1:])}
+            return out
+
         sector_docs = []
         for r in results:
             o = outcode_rows.get(r.outcode)
@@ -280,6 +323,7 @@ def export_results_for_artifact(out_dir: Path, run_id: str | None = None, is_exa
                 "geo_group": o.geo_group,
                 "town": ps.town,
                 "prices": prices,
+                "fares": _fares_for_sector(r.sector),
             }
             (sectors_dir / f"{sector_doc_id(r.sector)}.json").write_text(json.dumps(doc))
             sector_docs.append(doc)
