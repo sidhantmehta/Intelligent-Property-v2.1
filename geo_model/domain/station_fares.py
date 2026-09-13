@@ -43,10 +43,16 @@ __all__ = [
     "build_flow_index",
     "find_flow_id_indexed",
     "monthly_from_weekly",
+    "extract_ticket_fare",
     "extract_fares_for_flow",
+    "select_monthly_season",
     "ANYTIME_DAY_RETURN_CODE",
     "WEEKLY_SEASON_CODE",
+    "TRAVELCARD_WEEKLY_SEASON_CODE",
+    "LONDON_ZONES_1_TO_6_DESCRIPTION",
     "MONTHLY_SEASON_MULTIPLIER",
+    "MONTHLY_BASIS_ZONES_TRAVELCARD",
+    "MONTHLY_BASIS_STATION_OR_CLUSTER",
     "ADULT_STATUS_CODE",
 ]
 
@@ -59,7 +65,18 @@ __all__ = [
 MONTHLY_SEASON_MULTIPLIER = 3.84
 
 ANYTIME_DAY_RETURN_CODE = "SDR"  # standard class
-WEEKLY_SEASON_CODE = "7DS"  # standard class
+WEEKLY_SEASON_CODE = "7DS"  # standard class, rail-only (no Travelcard)
+# Weekly season INCLUDING a Zones 1-6 Travelcard, standard class -- the
+# product a commuter from outside the zonal boundary actually buys, and
+# what a fare-comparison site (Trainline etc.) shows by default. Priced
+# to the special "LONDON ZONES 1-6" location (no CRS -- see
+# geo_model.fares_data.parse_locations), not to the individual station or
+# cluster, so it never shows up on the same flow as WEEKLY_SEASON_CODE.
+# Real example that surfaced this: Gerrards Cross's rail-only weekly to
+# the "London Terminals" cluster is ~£87, but the advertised commuter
+# price is ~£115 -- the gap is exactly this Travelcard add-on.
+TRAVELCARD_WEEKLY_SEASON_CODE = "7TS"
+LONDON_ZONES_1_TO_6_DESCRIPTION = "LONDON ZONES 1-6"
 ADULT_STATUS_CODE = "000"
 
 # The LOC file's 16-char DESCRIPTION abbreviates whole words by hand
@@ -295,12 +312,51 @@ def monthly_from_weekly(weekly_fare_pence: int) -> int:
     return round(weekly_fare_pence * MONTHLY_SEASON_MULTIPLIER)
 
 
+def extract_ticket_fare(fares_for_flow: list[FareRecord], ticket_code: str) -> int | None:
+    return next((f.fare_pence for f in fares_for_flow if f.ticket_code == ticket_code), None)
+
+
 def extract_fares_for_flow(fares_for_flow: list[FareRecord]) -> tuple[int | None, int | None]:
     """Returns (anytime_day_return_pence, monthly_season_pence) for one
-    flow's fare rows. Monthly is always computed from the Weekly (7-day)
-    season fare (see module docstring) -- there is no standard-class
-    Monthly ticket-type code in the feed to look up directly."""
-    sdr = next((f.fare_pence for f in fares_for_flow if f.ticket_code == ANYTIME_DAY_RETURN_CODE), None)
-    weekly = next((f.fare_pence for f in fares_for_flow if f.ticket_code == WEEKLY_SEASON_CODE), None)
+    flow's fare rows, using only that flow's own rail-only Weekly (7DS)
+    for the monthly figure -- a simple convenience for a single
+    station/cluster-direct flow. Real sector_station_fares computation
+    should prefer select_monthly_season() instead, which also checks the
+    Zones 1-6 Travelcard flow (see that function's docstring for why)."""
+    sdr = extract_ticket_fare(fares_for_flow, ANYTIME_DAY_RETURN_CODE)
+    weekly = extract_ticket_fare(fares_for_flow, WEEKLY_SEASON_CODE)
     monthly = monthly_from_weekly(weekly) if weekly is not None else None
     return sdr, monthly
+
+
+# SectorStationFare.monthly_fare_basis values -- see select_monthly_season.
+MONTHLY_BASIS_ZONES_TRAVELCARD = "zones_1_6_travelcard"
+MONTHLY_BASIS_STATION_OR_CLUSTER = "station_or_cluster"
+
+
+def select_monthly_season(
+    station_fares_for_flow: list[FareRecord],
+    zones_fares_for_flow: list[FareRecord] | None,
+) -> tuple[int | None, str]:
+    """Prefers the Zones 1-6 Travelcard-inclusive Weekly (7TS, priced to
+    the special "LONDON ZONES 1-6" location -- see LONDON_ZONES_1_TO_6_
+    DESCRIPTION) when a flow to it exists: that's the product a real
+    commuter from outside the zonal boundary buys, and what a fare-
+    comparison site shows by default -- confirmed against a real mismatch
+    (see TRAVELCARD_WEEKLY_SEASON_CODE's docstring). Falls back to the
+    station/cluster-direct rail-only Weekly (7DS) otherwise, e.g. for a
+    station already inside the TfL zones (observed: Charlton, zone 4)
+    that has no Zones 1-6 flow at all -- its own rail fare already covers
+    zonal travel, no add-on needed.
+
+    Returns (monthly_pence_or_None, basis); ``basis`` is surfaced on
+    SectorStationFare.monthly_fare_basis so the frontend can label which
+    kind of price it's showing rather than imply they're interchangeable."""
+    if zones_fares_for_flow:
+        weekly = extract_ticket_fare(zones_fares_for_flow, TRAVELCARD_WEEKLY_SEASON_CODE)
+        if weekly is not None:
+            return monthly_from_weekly(weekly), MONTHLY_BASIS_ZONES_TRAVELCARD
+    weekly = extract_ticket_fare(station_fares_for_flow, WEEKLY_SEASON_CODE)
+    if weekly is not None:
+        return monthly_from_weekly(weekly), MONTHLY_BASIS_STATION_OR_CLUSTER
+    return None, MONTHLY_BASIS_STATION_OR_CLUSTER

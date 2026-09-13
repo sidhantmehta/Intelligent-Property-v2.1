@@ -592,10 +592,21 @@ class SectorStationFare(Base):
     sector's nearest stations (SectorStation) to one reference point,
     produced by geo_model.pipeline.compute_sector_station_fares. Monthly
     season is never a direct fare-feed line item for standard class (only
-    First Class has one) -- it's computed from the real Weekly (7-day)
-    season fare using the nationally fixed regulated multiplier (Weekly x
-    3.84), not looked up; ``monthly_is_computed`` records that plainly so
-    the frontend can label it rather than imply it was fetched verbatim."""
+    First Class has one) -- it's computed from a real Weekly fare using
+    the nationally fixed regulated multiplier (Weekly x 3.84), not looked
+    up; ``monthly_is_computed`` records that plainly so the frontend can
+    label it rather than imply it was fetched verbatim.
+
+    Which Weekly fare depends on ``monthly_fare_basis``: "zones_1_6_
+    travelcard" means the Weekly is the Zones 1-6 Travelcard-inclusive
+    one (what a commuter from outside the zonal boundary actually buys,
+    and what a fare-comparison site shows by default -- see
+    geo_model.domain.station_fares.select_monthly_season); "station_or_
+    cluster" means the plain rail-only Weekly to the destination station/
+    cluster (used when no Zones 1-6 flow exists at all, e.g. a station
+    already inside the TfL zones like Charlton). The two are not
+    interchangeable -- surfaced so the frontend can label which kind of
+    price it's showing."""
 
     __tablename__ = "sector_station_fares"
     __table_args__ = (
@@ -613,4 +624,5 @@ class SectorStationFare(Base):
     anytime_day_return_pence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_season_pence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_is_computed: Mapped[bool] = mapped_column(default=True)  # always True today -- see class docstring
+    monthly_fare_basis: Mapped[str | None] = mapped_column(String(24), nullable=True)  # "zones_1_6_travelcard" | "station_or_cluster" -- see class docstring
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

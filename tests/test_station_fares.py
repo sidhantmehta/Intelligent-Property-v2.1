@@ -137,3 +137,41 @@ def test_extract_fares_for_flow_missing_ticket_types_are_none():
     sdr, monthly = sf.extract_fares_for_flow([])
     assert sdr is None
     assert monthly is None
+
+
+def test_select_monthly_season_prefers_zones_travelcard_when_present():
+    # Real example: Gerrards Cross's rail-only weekly to "London
+    # Terminals" is ~£87, but the Zones 1-6 Travelcard weekly is £115 --
+    # the actually-advertised commuter price.
+    station_fares_for_flow = [sf.FareRecord(flow_id="A", ticket_code="7DS", fare_pence=8710)]
+    zones_fares_for_flow = [sf.FareRecord(flow_id="B", ticket_code="7TS", fare_pence=11500)]
+    monthly, basis = sf.select_monthly_season(station_fares_for_flow, zones_fares_for_flow)
+    assert basis == sf.MONTHLY_BASIS_ZONES_TRAVELCARD
+    assert monthly == round(11500 * 3.84)
+
+
+def test_select_monthly_season_falls_back_when_no_zones_flow():
+    # Real example: Charlton (zone 4) has no Zones 1-6 flow at all --
+    # its own rail fare already covers zonal travel.
+    station_fares_for_flow = [sf.FareRecord(flow_id="A", ticket_code="7DS", fare_pence=3230)]
+    monthly, basis = sf.select_monthly_season(station_fares_for_flow, None)
+    assert basis == sf.MONTHLY_BASIS_STATION_OR_CLUSTER
+    assert monthly == round(3230 * 3.84)
+
+
+def test_select_monthly_season_falls_back_when_zones_flow_has_no_7ts():
+    station_fares_for_flow = [sf.FareRecord(flow_id="A", ticket_code="7DS", fare_pence=3230)]
+    zones_fares_for_flow = [sf.FareRecord(flow_id="B", ticket_code="ODT", fare_pence=2490)]
+    monthly, basis = sf.select_monthly_season(station_fares_for_flow, zones_fares_for_flow)
+    assert basis == sf.MONTHLY_BASIS_STATION_OR_CLUSTER
+    assert monthly == round(3230 * 3.84)
+
+
+def test_select_monthly_season_none_when_neither_has_a_weekly():
+    monthly, basis = sf.select_monthly_season([], None)
+    assert monthly is None
+    assert basis == sf.MONTHLY_BASIS_STATION_OR_CLUSTER
+
+
+def test_extract_ticket_fare_returns_none_when_absent():
+    assert sf.extract_ticket_fare([], "SDR") is None

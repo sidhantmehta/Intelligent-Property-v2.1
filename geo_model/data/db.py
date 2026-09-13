@@ -33,6 +33,7 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("price_paid_transactions", "street", "VARCHAR(128)"),
     ("epc_certificates", "address1", "VARCHAR(256)"),
     ("epc_certificates", "address2", "VARCHAR(256)"),
+    ("sector_station_fares", "monthly_fare_basis", "VARCHAR(24)"),
 ]
 
 

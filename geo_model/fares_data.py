@@ -112,11 +112,21 @@ def extract_fares_zip(zip_path: Path, dest_dir: Path) -> dict[str, Path]:
 
 def parse_locations(loc_path: Path) -> Iterator[FareLocationRecord]:
     """Parses the LOC file's Location records (RSPS5045 section 4.19.2).
-    Only rows with a non-blank CRS code are yielded -- those without one
-    are PlusBus zones, county/area codes, etc., which can never be a rail
-    journey endpoint. Header lines (RSP's own file-metadata banner) start
-    with '/' and are skipped; data lines start with an update marker
-    ('R' in a full refresh) followed by RECORD_TYPE='L' at position 2."""
+    Rows with a non-blank CRS code are real physical stations. Rows
+    without one are mostly PlusBus zones/county/area codes that can never
+    be a rail journey endpoint -- except the fifteen "LONDON ZONES x-y"
+    locations (e.g. NLC 0035 = "LONDON ZONES 1-6"), which have no CRS
+    (they aren't a station) but ARE real destinations: the Travelcard-
+    inclusive season ticket a commuter from outside the zonal boundary
+    actually buys is priced to one of these, not to the individual
+    terminus -- found by hand while investigating a real fare mismatch
+    (Gerrards Cross's "London Terminals"-cluster weekly, ~£87, undershot
+    the real advertised ~£115 weekly; the difference is exactly this
+    zones-1-6 Travelcard add-on). So both kinds are kept; everything else
+    blank-CRS is dropped. Header lines (RSP's own file-metadata banner)
+    start with '/' and are skipped; data lines start with an update
+    marker ('R' in a full refresh) followed by RECORD_TYPE='L' at
+    position 2."""
     with open(loc_path, encoding="latin-1") as f:
         for line in f:
             line = line.rstrip("\r\n")
@@ -128,7 +138,7 @@ def parse_locations(loc_path: Path) -> Iterator[FareLocationRecord]:
             description = line[40:56].strip()
             crs_code = line[56:59].strip()
             fare_group_nlc = line[69:75].strip()
-            if not crs_code:
+            if not crs_code and not description.startswith("LONDON ZONES"):
                 continue
             yield FareLocationRecord(nlc=nlc, description=description, crs_code=crs_code, fare_group_nlc=fare_group_nlc or nlc)
 

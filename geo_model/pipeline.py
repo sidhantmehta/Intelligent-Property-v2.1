@@ -813,6 +813,17 @@ def compute_sector_station_fares(ffl_path, outcode_filter: list[str] | None = No
             dest_stations_by_ref[rp.name] = names
             log.info("Reference point %r destination stations: %s (nlcs=%s)", rp.name, names, sorted(nlcs))
 
+        # Both current reference points sit in Zone 1, so the Zones 1-6
+        # Travelcard-inclusive product (see station_fares.select_monthly_
+        # season) applies to either -- one shared destination NLC, not
+        # resolved per reference point. Assumption worth revisiting if a
+        # reference point outside Zone 1 is ever added.
+        zones_1_6_nlc = session.scalar(
+            select(FareLocation.nlc).where(FareLocation.description == station_fares.LONDON_ZONES_1_TO_6_DESCRIPTION)
+        )
+        if zones_1_6_nlc is None:
+            log.warning("No %r fare location found -- monthly season will always use the station/cluster-direct fare", station_fares.LONDON_ZONES_1_TO_6_DESCRIPTION)
+
         sector_station_query = (
             select(SectorStation, PostcodeSector.outcode)
             .join(PostcodeSector, PostcodeSector.sector == SectorStation.sector)
@@ -825,6 +836,8 @@ def compute_sector_station_fares(ffl_path, outcode_filter: list[str] | None = No
         relevant_nlcs: set[str] = set()
         for nlcs in dest_nlcs_by_ref.values():
             relevant_nlcs.update(nlcs)
+        if zones_1_6_nlc is not None:
+            relevant_nlcs.add(zones_1_6_nlc)
         origin_nlcs_by_station: dict[str, set[str]] = {}
         for ss, _outcode in origin_rows:
             m = match_by_atco.get(ss.station_atco_code)
@@ -884,24 +897,36 @@ def compute_sector_station_fares(ffl_path, outcode_filter: list[str] | None = No
             session.execute(delete(SectorStationFare).where(SectorStationFare.sector.in_(scoped_sectors)))
 
         no_flow_found = 0
+        by_zones_travelcard = 0
         for ss, _outcode in origin_rows:
             origin_nlcs = origin_nlcs_by_station.get(ss.station_atco_code)
             if origin_nlcs is None:
                 continue
+            # Shared across reference points -- both are Zone 1, see the
+            # zones_1_6_nlc comment above.
+            zones_flow_id = (
+                station_fares.find_flow_id_indexed(origin_nlcs, {zones_1_6_nlc}, flow_index)
+                if zones_1_6_nlc is not None else None
+            )
+            zones_fares = fares_by_flow.get(zones_flow_id, []) if zones_flow_id is not None else None
+
             for rp in ref_points:
                 dest_nlcs = dest_nlcs_by_ref.get(rp.name) or set()
                 if not dest_nlcs:
                     continue
                 flow_id = station_fares.find_flow_id_indexed(origin_nlcs, dest_nlcs, flow_index)
-                sdr, monthly = (None, None)
-                if flow_id is not None:
-                    sdr, monthly = station_fares.extract_fares_for_flow(fares_by_flow.get(flow_id, []))
-                if flow_id is None:
+                station_fares_for_flow = fares_by_flow.get(flow_id, []) if flow_id is not None else []
+                sdr = station_fares.extract_ticket_fare(station_fares_for_flow, station_fares.ANYTIME_DAY_RETURN_CODE) if flow_id is not None else None
+                monthly, basis = station_fares.select_monthly_season(station_fares_for_flow, zones_fares)
+                if basis == station_fares.MONTHLY_BASIS_ZONES_TRAVELCARD:
+                    by_zones_travelcard += 1
+                if flow_id is None and zones_flow_id is None:
                     no_flow_found += 1
                 quotes.append(dict(
                     sector=ss.sector, station_atco_code=ss.station_atco_code, station_name=ss.station_name,
                     station_rank=ss.rank, reference_point_name=rp.name,
-                    anytime_day_return_pence=sdr, monthly_season_pence=monthly, monthly_is_computed=True,
+                    anytime_day_return_pence=sdr, monthly_season_pence=monthly,
+                    monthly_is_computed=True, monthly_fare_basis=basis,
                 ))
 
         for i in range(0, len(quotes), 5000):
@@ -909,12 +934,14 @@ def compute_sector_station_fares(ffl_path, outcode_filter: list[str] | None = No
         session.commit()
 
     log.info(
-        "compute_sector_station_fares complete: %d quotes across %d sector<->station rows, %d reference points, %d with no flow found",
-        len(quotes), len(origin_rows), len(ref_points), no_flow_found,
+        "compute_sector_station_fares complete: %d quotes across %d sector<->station rows, %d reference points, "
+        "%d with no flow found, %d monthly figures used the Zones 1-6 Travelcard fare",
+        len(quotes), len(origin_rows), len(ref_points), no_flow_found, by_zones_travelcard,
     )
     return {
         "run_id": run_id, "quotes": len(quotes), "sector_station_rows": len(origin_rows),
         "reference_points": len(ref_points), "no_flow_found": no_flow_found,
+        "monthly_via_zones_travelcard": by_zones_travelcard,
         "flows_parsed": len(flows), "fares_parsed": len(fares),
     }
 
