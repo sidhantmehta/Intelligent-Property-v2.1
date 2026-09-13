@@ -32,6 +32,10 @@ from geo_model.data.models import (
     Amenity,
     ApiUsage,
     EpcCertificate,
+    Fare,
+    FareFlow,
+    FareLocation,
+    FareTicketType,
     GrammarSchool,
     HpiIndex,
     MatchedPropertySale,
@@ -48,10 +52,22 @@ from geo_model.data.models import (
     SectorMatchedPrice,
     SectorPrice,
     SectorStation,
+    SectorStationFare,
     SectorTravelTime,
+    StationFareMatch,
     TravelTime,
 )
-from geo_model.domain import address_match, floor_area, geo_cache, matched_pricing, pricing, scoring, stations as stations_domain
+from geo_model.domain import (
+    address_match,
+    floor_area,
+    geo_cache,
+    matched_pricing,
+    pricing,
+    scoring,
+    station_fares,
+    stations as stations_domain,
+)
+from geo_model import fares_data
 from geo_model.logging_setup import get_logger, new_run_id, run_logger
 from geo_model.providers.base import GeoPoint, GeoProvider
 from geo_model.providers.here_maps import HereMapsProvider
@@ -684,6 +700,223 @@ def compute_sector_stations(outcode_filter: list[str] | None = None) -> dict:
 
     log.info("compute_sector_stations complete: %d sector<->station rows across %d sectors", len(matches), len(sector_centroids))
     return {"run_id": run_id, "sector_station_rows": len(matches), "sectors": len(sector_centroids)}
+
+
+# How many of a reference point's nearest stations to treat as valid
+# "arrive here" targets. >1 so a reference point right by a cluster of
+# termini (e.g. Zig Zag Building is a short walk from both Victoria main
+# line and underground entrances) isn't limited to a single candidate
+# that might turn out unmatched.
+_DESTINATION_STATION_CANDIDATES = 3
+
+
+def match_stations_to_fares() -> dict:
+    """Wires geo_model.domain.station_fares to the DB: loads every
+    RailStation and FareLocation (with a CRS code -- see FareLocation's
+    docstring), matches by name, and replaces station_fare_matches with
+    the fresh result. Unscoped -- the whole GB station list is small, same
+    convention as compute_sector_stations. Run after ingest_fares(); a
+    pure recompute like the other match_*/compute_* pipeline steps."""
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+
+    with get_session() as session:
+        stations = [
+            stations_domain.StationRecord(atco_code=row.atco_code, name=row.name, lat=row.lat, long=row.long)
+            for row in session.execute(select(RailStation.atco_code, RailStation.name, RailStation.lat, RailStation.long))
+        ]
+        fare_locations = [
+            station_fares.FareLocationRecord(nlc=row.nlc, description=row.description, crs_code=row.crs_code, fare_group_nlc=row.fare_group_nlc)
+            for row in session.execute(select(FareLocation.nlc, FareLocation.description, FareLocation.crs_code, FareLocation.fare_group_nlc))
+        ]
+        if not fare_locations:
+            raise RuntimeError("fare_locations is empty -- run `ingest-fares` first")
+        log.info("Loaded %d rail stations, %d fare locations", len(stations), len(fare_locations))
+
+        results = station_fares.match_stations_to_fare_locations(stations, fare_locations)
+        by_confidence: dict[str, int] = {}
+        for r in results:
+            by_confidence[r.confidence] = by_confidence.get(r.confidence, 0) + 1
+        log.info("Station<->fare match confidence breakdown: %s", by_confidence)
+
+        session.execute(delete(StationFareMatch))
+        rows = [
+            dict(
+                station_atco_code=r.station_atco_code, nlc=r.nlc, crs_code=r.crs_code,
+                fare_group_nlc=r.fare_group_nlc, confidence=r.confidence, match_note=r.match_note,
+            )
+            for r in results
+        ]
+        for i in range(0, len(rows), 2000):
+            session.execute(StationFareMatch.__table__.insert(), rows[i:i + 2000])
+        session.commit()
+
+    return {"run_id": run_id, "stations_matched": len(results), "by_confidence": by_confidence}
+
+
+def compute_sector_station_fares(ffl_path, outcode_filter: list[str] | None = None) -> dict:
+    """Wires geo_model.fares_data's FFL parsing + geo_model.domain.
+    station_fares' flow lookup and monthly-season computation to the DB:
+    for every (sector, nearest station) pair in scope, finds the flow to
+    each reference point's nearest station(s) (checking both the direct
+    NLC and fare-group/cluster NLC on each side -- see station_fares.
+    find_flow_id) and extracts/derives its Anytime Day Return and Monthly
+    Season fares into sector_station_fares.
+
+    Requires geo_model.fares_data.ingest_fares() and match_stations_to_
+    fares() to have already populated fare_locations/station_fare_matches,
+    and compute_sector_stations() to have populated sector_stations.
+    Re-parses the FFL file each call (rather than reusing a stored full
+    copy) because the FFL is ~8.3M lines nationwide and this project only
+    ever needs the slice connecting our own origin/destination stations --
+    see geo_model.fares_data.parse_flows_and_fares."""
+    ensure_db_ready()
+    run_id = new_run_id()
+    log = run_logger(__name__, run_id)
+
+    with get_session() as session:
+        match_by_atco: dict[str, StationFareMatch] = {
+            row.station_atco_code: row
+            for row in session.scalars(select(StationFareMatch).where(StationFareMatch.confidence != "unmatched"))
+        }
+        if not match_by_atco:
+            raise RuntimeError("station_fare_matches has no usable rows -- run `match-stations-to-fares` first")
+
+        ref_points = list(session.scalars(select(ReferencePointRow).where(ReferencePointRow.lat.is_not(None))))
+        if not ref_points:
+            raise RuntimeError("reference_points has no geocoded rows -- run `refresh-geo-data` first")
+        all_stations = [
+            stations_domain.StationRecord(atco_code=row.atco_code, name=row.name, lat=row.lat, long=row.long)
+            for row in session.execute(select(RailStation.atco_code, RailStation.name, RailStation.lat, RailStation.long))
+        ]
+
+        # For each reference point, its own nearest stations are the
+        # "arrival" targets -- resolved via the same nearest_stations()
+        # geometry used for sectors, just with the reference point's own
+        # lat/long as the one "sector" centroid.
+        dest_nlcs_by_ref: dict[str, set[str]] = {}
+        dest_stations_by_ref: dict[str, list[str]] = {}
+        for rp in ref_points:
+            pseudo = stations_domain.SectorCentroid(sector=rp.name, lat=rp.lat, long=rp.long)
+            nearest = stations_domain.nearest_stations([pseudo], all_stations, n=_DESTINATION_STATION_CANDIDATES)
+            nlcs: set[str] = set()
+            names: list[str] = []
+            for n in nearest:
+                m = match_by_atco.get(n.station_atco_code)
+                if m is None:
+                    continue
+                nlcs.add(m.nlc)
+                nlcs.add(m.fare_group_nlc)
+                names.append(n.station_name)
+            dest_nlcs_by_ref[rp.name] = nlcs
+            dest_stations_by_ref[rp.name] = names
+            log.info("Reference point %r destination stations: %s (nlcs=%s)", rp.name, names, sorted(nlcs))
+
+        sector_station_query = (
+            select(SectorStation, PostcodeSector.outcode)
+            .join(PostcodeSector, PostcodeSector.sector == SectorStation.sector)
+        )
+        if outcode_filter:
+            sector_station_query = sector_station_query.where(PostcodeSector.outcode.in_(outcode_filter))
+        origin_rows = list(session.execute(sector_station_query))
+        log.info("Loaded %d sector<->station rows in scope", len(origin_rows))
+
+        relevant_nlcs: set[str] = set()
+        for nlcs in dest_nlcs_by_ref.values():
+            relevant_nlcs.update(nlcs)
+        origin_nlcs_by_station: dict[str, set[str]] = {}
+        for ss, _outcode in origin_rows:
+            m = match_by_atco.get(ss.station_atco_code)
+            if m is None:
+                continue
+            nlcs = {m.nlc, m.fare_group_nlc}
+            origin_nlcs_by_station[ss.station_atco_code] = nlcs
+            relevant_nlcs.update(nlcs)
+
+        flows, fares = fares_data.parse_flows_and_fares(ffl_path, relevant_nlcs)
+        fares_by_flow: dict[str, list[station_fares.FareRecord]] = {}
+        for fr in fares:
+            fares_by_flow.setdefault(fr.flow_id, []).append(fr)
+        # Indexed lookup, not station_fares.find_flow_id's linear scan --
+        # this loop below does one lookup per (station, reference point)
+        # pair, which at full scope is thousands of pairs against tens of
+        # thousands of flows.
+        flow_index = station_fares.build_flow_index(flows)
+
+        # Upsert (never delete-then-reinsert): FareFlow/Fare only ever
+        # hold the slice of the national feed relevant to stations seen
+        # so far, which can differ between a scoped and an --all run --
+        # deleting first would drop rows for stations outside *this*
+        # call's scope. Re-parsing the same flow/fare on a later feed
+        # release should still refresh its price, hence "on conflict
+        # update" rather than "on conflict do nothing".
+        flow_rows = [
+            dict(
+                flow_id=f.flow_id, origin_nlc=f.origin_nlc, dest_nlc=f.dest_nlc, route_code="",
+                status_code=f.status_code, usage_code="", direction=f.direction, toc="",
+            )
+            for f in flows
+        ]
+        for i in range(0, len(flow_rows), 5000):
+            batch = flow_rows[i:i + 5000]
+            stmt = sqlite_insert(FareFlow).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["flow_id"],
+                set_={"origin_nlc": stmt.excluded.origin_nlc, "dest_nlc": stmt.excluded.dest_nlc,
+                      "status_code": stmt.excluded.status_code, "direction": stmt.excluded.direction},
+            )
+            session.execute(stmt)
+
+        fare_rows = [dict(flow_id=fr.flow_id, ticket_code=fr.ticket_code, fare_pence=fr.fare_pence, restriction_code=None) for fr in fares]
+        for i in range(0, len(fare_rows), 5000):
+            batch = fare_rows[i:i + 5000]
+            stmt = sqlite_insert(Fare).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["flow_id", "ticket_code"],
+                set_={"fare_pence": stmt.excluded.fare_pence, "restriction_code": stmt.excluded.restriction_code},
+            )
+            session.execute(stmt)
+
+        quotes = []
+        scoped_sectors = {ss.sector for ss, _outcode in origin_rows}
+        if scoped_sectors:
+            session.execute(delete(SectorStationFare).where(SectorStationFare.sector.in_(scoped_sectors)))
+
+        no_flow_found = 0
+        for ss, _outcode in origin_rows:
+            origin_nlcs = origin_nlcs_by_station.get(ss.station_atco_code)
+            if origin_nlcs is None:
+                continue
+            for rp in ref_points:
+                dest_nlcs = dest_nlcs_by_ref.get(rp.name) or set()
+                if not dest_nlcs:
+                    continue
+                flow_id = station_fares.find_flow_id_indexed(origin_nlcs, dest_nlcs, flow_index)
+                sdr, monthly = (None, None)
+                if flow_id is not None:
+                    sdr, monthly = station_fares.extract_fares_for_flow(fares_by_flow.get(flow_id, []))
+                if flow_id is None:
+                    no_flow_found += 1
+                quotes.append(dict(
+                    sector=ss.sector, station_atco_code=ss.station_atco_code, station_name=ss.station_name,
+                    station_rank=ss.rank, reference_point_name=rp.name,
+                    anytime_day_return_pence=sdr, monthly_season_pence=monthly, monthly_is_computed=True,
+                ))
+
+        for i in range(0, len(quotes), 5000):
+            session.execute(SectorStationFare.__table__.insert(), quotes[i:i + 5000])
+        session.commit()
+
+    log.info(
+        "compute_sector_station_fares complete: %d quotes across %d sector<->station rows, %d reference points, %d with no flow found",
+        len(quotes), len(origin_rows), len(ref_points), no_flow_found,
+    )
+    return {
+        "run_id": run_id, "quotes": len(quotes), "sector_station_rows": len(origin_rows),
+        "reference_points": len(ref_points), "no_flow_found": no_flow_found,
+        "flows_parsed": len(flows), "fares_parsed": len(fares),
+    }
 
 
 def refresh_geo_data(config: ModelConfig, outcode_filter: list[str] | None = None) -> dict:

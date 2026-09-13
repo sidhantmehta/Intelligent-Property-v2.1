@@ -488,3 +488,129 @@ class SectorStation(Base):
     distance_miles: Mapped[float] = mapped_column(Float, nullable=False)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 = closest
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FareLocation(Base):
+    """One station/cluster location from the ATOC/RSP fares feed's LOC
+    file (see geo_model.fares_data) -- NLC-keyed, distinct from RailStation
+    (NaPTAN, atco_code-keyed). Kept for every real physical station with a
+    CRS code (PlusBus/zone-only locations, which have no CRS, are never
+    stored -- they can't be a rail journey endpoint). ``fare_group_nlc``
+    equals ``nlc`` itself for a location that isn't part of a cluster;
+    otherwise it's a shared cluster NLC (e.g. '1072' = "London Terminals"),
+    and flows are frequently only recorded against the cluster, not the
+    individual station -- see geo_model.domain.station_fares."""
+
+    __tablename__ = "fare_locations"
+
+    nlc: Mapped[str] = mapped_column(String(4), primary_key=True)
+    description: Mapped[str] = mapped_column(String(16), nullable=False)  # raw, hand-abbreviated to fit 16 chars -- see station_fares module docstring
+    crs_code: Mapped[str] = mapped_column(String(3), nullable=False, index=True)
+    fare_group_nlc: Mapped[str] = mapped_column(String(4), nullable=False, index=True)
+
+
+class FareTicketType(Base):
+    """One ticket-type code from the fares feed's TTY file -- e.g. 'SDR' =
+    Anytime Day Return standard, '7DS' = 7-Day (Weekly) Season standard.
+    Small (~4,000 rows), stored in full."""
+
+    __tablename__ = "fare_ticket_types"
+
+    ticket_code: Mapped[str] = mapped_column(String(3), primary_key=True)
+    description: Mapped[str] = mapped_column(String(16), nullable=False)
+    tkt_class: Mapped[str] = mapped_column(String(1), nullable=False)  # '1' first, '2' standard, '9' undefined
+    tkt_type: Mapped[str] = mapped_column(String(1), nullable=False)  # 'S' single, 'R' return, 'N' season
+
+
+class FareFlow(Base):
+    """One flow (an origin/destination NLC pair with a route) from the
+    fares feed's FFL file, restricted at ingest time to flows connecting
+    our origin stations (geo_model.domain.stations' sector_stations) to
+    our destination targets (nearest station(s) to each reference point)
+    -- see geo_model.fares_data.parse_flows_and_fares. The full feed is
+    ~8.3M lines; storing every flow nationwide would dwarf everything else
+    in this DB for no benefit we currently need."""
+
+    __tablename__ = "fare_flows"
+
+    flow_id: Mapped[str] = mapped_column(String(7), primary_key=True)
+    origin_nlc: Mapped[str] = mapped_column(String(4), nullable=False, index=True)
+    dest_nlc: Mapped[str] = mapped_column(String(4), nullable=False, index=True)
+    route_code: Mapped[str] = mapped_column(String(5), nullable=False)
+    status_code: Mapped[str] = mapped_column(String(3), nullable=False)  # '000' = adult
+    usage_code: Mapped[str] = mapped_column(String(1), nullable=False)  # 'A' actual, 'G' generated
+    direction: Mapped[str] = mapped_column(String(1), nullable=False)  # 'S' single-direction, 'R' reversible
+    toc: Mapped[str] = mapped_column(String(3), nullable=False)
+
+
+class Fare(Base):
+    """One ticket-code's fare for one flow, from the fares feed's FFL file
+    -- same ingest-time restriction as FareFlow."""
+
+    __tablename__ = "fares"
+    __table_args__ = (
+        UniqueConstraint("flow_id", "ticket_code", name="uq_fare_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    flow_id: Mapped[str] = mapped_column(String(7), ForeignKey("fare_flows.flow_id"), nullable=False, index=True)
+    ticket_code: Mapped[str] = mapped_column(String(3), nullable=False, index=True)
+    fare_pence: Mapped[int] = mapped_column(Integer, nullable=False)
+    restriction_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+
+
+class StationFareMatch(Base):
+    """RailStation (NaPTAN, atco_code-keyed) joined to FareLocation (fares
+    feed, NLC-keyed) by name, produced by geo_model.domain.station_fares --
+    the two datasets share no common code (see RailStation's docstring).
+    Every RailStation gets a row, even an "unmatched" one (nlc/crs_code/
+    fare_group_nlc all NULL) -- never silently dropped, so a station that
+    should have fare data but doesn't can be looked up and the reason seen,
+    same rationale as MatchedPropertySale's "ambiguous" tier. Only "exact"
+    and "fuzzy" rows are usable for fare lookups."""
+
+    __tablename__ = "station_fare_matches"
+
+    station_atco_code: Mapped[str] = mapped_column(String(16), ForeignKey("rail_stations.atco_code"), primary_key=True)
+    nlc: Mapped[str | None] = mapped_column(String(4), nullable=True, index=True)
+    crs_code: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    fare_group_nlc: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    # "exact": normalized names matched directly (after abbreviation
+    #   expansion, e.g. STREET->ST). "fuzzy": matched via a vowel-dropped
+    #   consonant-skeleton comparison (the fares feed's 16-char DESCRIPTION
+    #   field abbreviates by hand, e.g. "Paddington" -> "PDDNGTN") --
+    #   restricted to long/multi-word names to avoid the false positives
+    #   short names produce (e.g. "Chelmsford" incorrectly resembling
+    #   "Chelsfield"). "unmatched": no safe candidate found.
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    match_note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    matched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SectorStationFare(Base):
+    """Computed Anytime Day Return + Monthly Season cost from one of a
+    sector's nearest stations (SectorStation) to one reference point,
+    produced by geo_model.pipeline.compute_sector_station_fares. Monthly
+    season is never a direct fare-feed line item for standard class (only
+    First Class has one) -- it's computed from the real Weekly (7-day)
+    season fare using the nationally fixed regulated multiplier (Weekly x
+    3.84), not looked up; ``monthly_is_computed`` records that plainly so
+    the frontend can label it rather than imply it was fetched verbatim."""
+
+    __tablename__ = "sector_station_fares"
+    __table_args__ = (
+        UniqueConstraint("sector", "station_atco_code", "reference_point_name", name="uq_sector_station_fare_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector: Mapped[str] = mapped_column(String(8), ForeignKey("postcode_sectors.sector"), nullable=False, index=True)
+    station_atco_code: Mapped[str] = mapped_column(String(16), ForeignKey("rail_stations.atco_code"), nullable=False, index=True)
+    station_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    station_rank: Mapped[int] = mapped_column(Integer, nullable=False)  # copied from SectorStation.rank at compute time
+    reference_point_name: Mapped[str] = mapped_column(
+        String(128), ForeignKey("reference_points.name"), nullable=False, index=True
+    )
+    anytime_day_return_pence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_season_pence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_is_computed: Mapped[bool] = mapped_column(default=True)  # always True today -- see class docstring
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

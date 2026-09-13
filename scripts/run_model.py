@@ -47,6 +47,7 @@ from geo_model.logging_setup import get_logger  # noqa: E402
 from geo_model.grammar_schools import import_grammar_schools  # noqa: E402
 from geo_model.postcodes import backfill_outcode_areas, compute_sector_centroids, seed_outcodes_table  # noqa: E402
 from geo_model.epc_data import download_full_load_csv, ingest_epc_data  # noqa: E402
+from geo_model.fares_data import authenticate, download_fares_feed, extract_fares_zip, ingest_fares  # noqa: E402
 from geo_model.price_data import ingest_hpi_index, ingest_price_paid_data  # noqa: E402
 from geo_model.private_schools import import_private_schools  # noqa: E402
 from geo_model.rail_stations import download_naptan_csv, ingest_rail_stations  # noqa: E402
@@ -60,6 +61,8 @@ DEFAULT_PRIVATE_SCHOOLS_CSV = REPO_ROOT / "reference_data" / "private_schools_gr
 DEFAULT_GRAMMAR_SCHOOLS_CSV = REPO_ROOT / "reference_data" / "grammar_schools_london_home_counties.csv"
 DEFAULT_SCOPE_FILE = REPO_ROOT / "connector_scraper_data" / "outcodes_london_and_home_counties.txt"
 REFERENCE_DATA_DIR = REPO_ROOT / "reference_data"
+DEFAULT_FARES_ZIP = REPO_ROOT / "fares_feed.zip"
+DEFAULT_FARES_EXTRACT_DIR = REPO_ROOT / "fares_feed_extract"
 
 
 def _read_scope(outcodes_file: Path | None, use_all: bool) -> list[str] | None:
@@ -160,6 +163,36 @@ def cmd_ingest_rail_stations(args: argparse.Namespace) -> None:
 def cmd_compute_sector_stations(args: argparse.Namespace) -> None:
     scope = _read_scope(args.outcodes_file, args.all)
     result = pipeline.compute_sector_stations(outcode_filter=scope)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_ingest_fares(args: argparse.Namespace) -> None:
+    pipeline.ensure_db_ready()
+    zip_path = args.zip_path
+    if zip_path is None:
+        zip_path = DEFAULT_FARES_ZIP
+        token = authenticate()
+        download_fares_feed(token, zip_path)
+    extract_dir = args.extract_dir or DEFAULT_FARES_EXTRACT_DIR
+    paths = extract_fares_zip(zip_path, extract_dir)
+    with get_session() as session:
+        result = ingest_fares(session, paths["LOC"], paths["TTY"])
+    result["extract_dir"] = str(extract_dir)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_match_stations_to_fares(args: argparse.Namespace) -> None:
+    result = pipeline.match_stations_to_fares()
+    print(json.dumps(result, indent=2))
+
+
+def cmd_compute_sector_station_fares(args: argparse.Namespace) -> None:
+    scope = _read_scope(args.outcodes_file, args.all)
+    extract_dir = args.extract_dir or DEFAULT_FARES_EXTRACT_DIR
+    ffl_matches = list(extract_dir.glob("*.FFL"))
+    if not ffl_matches:
+        raise SystemExit(f"No .FFL file found in {extract_dir} -- run `ingest-fares` first")
+    result = pipeline.compute_sector_station_fares(ffl_matches[0], outcode_filter=scope)
     print(json.dumps(result, indent=2))
 
 
@@ -307,6 +340,20 @@ def main() -> None:
     p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
     p.add_argument("--all", action="store_true", help="Scope to every outcode with a computed sector centroid")
     p.set_defaults(func=cmd_compute_sector_stations)
+
+    p = sub.add_parser("ingest-fares", help="Authenticate against NRDP, download the ATOC/RSP fares feed (free, needs NRDP_USERNAME/NRDP_PASSWORD), and load fare_locations + fare_ticket_types")
+    p.add_argument("--zip-path", type=Path, default=None, help="Path to an already-downloaded fares feed zip, to skip re-authenticating/re-downloading")
+    p.add_argument("--extract-dir", type=Path, default=None, help=f"Where to extract the feed (default: {DEFAULT_FARES_EXTRACT_DIR})")
+    p.set_defaults(func=cmd_ingest_fares)
+
+    p = sub.add_parser("match-stations-to-fares", help="Join rail_stations (NaPTAN) to fare_locations (fares feed) by name into station_fare_matches")
+    p.set_defaults(func=cmd_match_stations_to_fares)
+
+    p = sub.add_parser("compute-sector-station-fares", help="Compute Anytime Day Return + Monthly Season fares from each sector's nearest stations to each reference point (sector_station_fares)")
+    p.add_argument("--outcodes-file", type=Path, default=None, help="Newline-delimited outcode list to scope to (default: London + Home Counties)")
+    p.add_argument("--all", action="store_true", help="Scope to every outcode with computed sector_stations")
+    p.add_argument("--extract-dir", type=Path, default=None, help=f"Where the fares feed was extracted by ingest-fares (default: {DEFAULT_FARES_EXTRACT_DIR})")
+    p.set_defaults(func=cmd_compute_sector_station_fares)
 
     for name, fn in (
         ("seed-outcodes", cmd_seed_outcodes),

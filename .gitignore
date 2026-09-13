@@ -11,6 +11,13 @@
 logs/
 frontend/export/
 
+# Large one-off downloads (fetch+ingest modules default to REPO_ROOT for
+# these -- never meant to be committed)
+naptan-access-nodes.csv
+epc-domestic-full-load.zip
+fares_feed.zip
+fares_feed_extract/
+
 # Python
 __pycache__/
 *.pyc
