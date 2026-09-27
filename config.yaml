@@ -97,6 +97,9 @@ reference_points:
   - name: "New Change"
     address: "New Change, London EC4M 9AF"
     weight: 5
+  - name: "EPIC Investors"
+    address: "16-20 Ely Pl, London EC1N 6SN"
+    weight: 0
 
 # HERE routing transport mode for travel-time scoring.
 travel_mode: "publicTransport"
