@@ -1,0 +1,43 @@
+# EPIC Investors Reference Point - Push Status
+
+## Overview
+Added "EPIC Investors, 16-20 Ely Pl, London EC1N 6SN" as a third reference point (weight: 0) to the geographic amenity scoring model. Since it's in London Zone 1, travelcard fares are identical to Zig Zag Building and New Change.
+
+## Data Preparation
+- Run ID: 9b7a265eae5e
+- Sectors computed: 2402
+- Export location: /home/user/Intelligent-Property-v2.1/frontend/export/results/sectors/
+- Export timestamp: 2026-09-27T12:29:19.661419
+
+## Live Push Status
+Pushing to Artifact DB: https://claude.ai/artifact/11cb3af0-1def-4dce-823c-d718732b9409
+
+### Completed
+- ✅ Batch 1 (20 docs): AL10_0 to AL5_1 (v4→v6)
+- ✅ Batch 2 (50 docs): BN14_8 to BN27_3 (v4→v5)
+
+### Remaining
+- 🔲 Batches 3-49: 2352 sectors remaining
+- Each batch: up to 50 docs, pinned to if_version: 4 (will increment to 5)
+- Estimated calls: ~48 ArtifactData.batch() calls needed
+
+## Next Steps
+1. Continue pushing batches 3-49 via ArtifactData.batch() with if_version: 4
+2. After all data pushed, republish dashboard.html to add EPIC Investors to reference point selector
+3. Test in live Artifact: verify EPIC Investors appears as travel time option
+4. Dashboard already has EPIC Investors data (added via config.yaml) - just needs visual verification
+
+## Config Changes
+File: config.yaml
+- Added reference point:
+  ```
+  - name: "EPIC Investors"
+    address: "16-20 Ely Pl, London EC1N 6SN"
+    weight: 0
+  ```
+
+## Verification Done
+- Fares: Identical to other Zone 1 destinations (Zig Zag/New Change)
+- Travel times: Distinct values computed via HERE Routing API
+- Total scores: Unaffected by weight:0 (no contribution to overall score)
+- Sample verified (SL9 8): 65min to Zig Zag/New Change, 55min to EPIC Investors
