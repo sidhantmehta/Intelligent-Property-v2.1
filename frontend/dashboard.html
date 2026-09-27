@@ -87,6 +87,10 @@
 
   /* ---------- layout ---------- */
   .layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
+  /* Grid items default to min-width:auto, which lets a wide table (many
+     nowrap columns) force this whole track -- and the page -- wider than
+     the viewport instead of scrolling within its own .table-scroll. */
+  .layout > div { min-width: 0; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
 
   .card {
@@ -151,7 +155,20 @@
   .compare-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
   .compare-bar .sep { width: 1px; height: 16px; background: var(--border); }
   .compare-bar label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
-  td.select-col, th.select-col { width: 1%; padding-right: 4px; }
+  td.select-col, th.select-col { width: 32px; min-width: 32px; padding-right: 4px; }
+  /* Frozen leading columns: stay visible while the table scrolls
+     horizontally on narrow screens (many category columns make the
+     table itself wider than the viewport by design). */
+  thead th.select-col, tbody td.select-col,
+  thead th.sector-col, tbody td.sector-col {
+    position: sticky; left: 0; z-index: 2; background: var(--surface);
+  }
+  thead th.sector-col, tbody td.sector-col { left: 32px; box-shadow: 1px 0 0 var(--grid); }
+  thead th.select-col, thead th.sector-col { z-index: 3; }
+  .table-scroll tbody tr:hover td.select-col, .table-scroll tbody tr:hover td.sector-col,
+  .table-scroll tbody tr.active td.select-col, .table-scroll tbody tr.active td.sector-col {
+    background: var(--surface-2);
+  }
   .table-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--ink-2); }
   .table-footer .pager { display: flex; align-items: center; gap: 8px; }
   .table-footer select {
@@ -1425,6 +1442,7 @@
     cols.forEach(function (c) {
       var th = document.createElement("th");
       th.textContent = c.label;
+      if (c.key === "sector") th.className = "sector-col";
       if (state.sortKey === c.key) {
         var arrow = document.createElement("span");
         arrow.className = "arrow";
@@ -1503,7 +1521,7 @@
       tr.appendChild(tdSelect);
 
       var tdSector = document.createElement("td");
-      tdSector.className = "outcode"; tdSector.textContent = o.sector;
+      tdSector.className = "outcode sector-col"; tdSector.textContent = o.sector;
       tr.appendChild(tdSector);
 
       var tdOut = document.createElement("td");
