@@ -113,9 +113,12 @@
     opacity: 0; transition: opacity 0.1s ease; z-index: 5;
   }
   .map-tooltip.show { opacity: 1; }
-  .map-wrap { position: relative; }
-  .map-wrap svg { cursor: grab; touch-action: none; }
+  .map-wrap { position: relative; max-height: 460px; overflow: hidden; border-radius: 8px; }
+  .map-wrap svg { cursor: grab; touch-action: pan-y; }
   .map-wrap svg.dragging { cursor: grabbing; }
+  @media (max-width: 640px) {
+    .map-wrap { max-height: 220px; }
+  }
   .map-zoom-controls {
     position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 4;
   }
@@ -941,7 +944,7 @@
     if (!hint) return;
     var label = (filterableColumns().find(function (c) { return c.key === state.colorBy; }) || {}).label || "total score";
     hint.textContent = "Positioned by sector centroid, coloured by " + label.toLowerCase() +
-      ". Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.";
+      ". Click a marker to highlight it in the table. Scroll or drag to pan on desktop; on a phone, use two fingers to pan/zoom the map — one finger scrolls the page.";
   }
 
   function renderColorBySelect() {
@@ -1000,6 +1003,46 @@
     window.addEventListener("mouseup", function () {
       if (dragging) { dragging = false; svg.classList.remove("dragging"); }
     });
+
+    // Two-finger touch pans/zooms the map (like Google Maps); a single
+    // finger is left alone so the browser's native page scroll still
+    // works when the map fills the screen on a phone.
+    var pinch = null; // { midX, midY, dist, rect }
+    function touchMid(touches, rect) {
+      var t0 = touches[0], t1 = touches[1];
+      return {
+        x: ((t0.clientX + t1.clientX) / 2 - rect.left),
+        y: ((t0.clientY + t1.clientY) / 2 - rect.top),
+        dist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+      };
+    }
+    svg.addEventListener("touchstart", function (ev) {
+      if (ev.touches.length !== 2 || !state.sectors.length) { pinch = null; return; }
+      ev.preventDefault();
+      var rect = svg.getBoundingClientRect();
+      pinch = touchMid(ev.touches, rect);
+      pinch.rect = rect;
+    }, { passive: false });
+    svg.addEventListener("touchmove", function (ev) {
+      if (ev.touches.length !== 2 || !pinch) return;
+      ev.preventDefault();
+      var rect = pinch.rect;
+      var now = touchMid(ev.touches, rect);
+      var dx = now.x - pinch.x, dy = now.y - pinch.y;
+      if (dx !== 0 || dy !== 0) panMapByPixels(dx, dy, rect);
+      if (now.dist > 0 && pinch.dist > 0) {
+        var svgX = now.x / rect.width * MAP_W;
+        var svgY = now.y / rect.height * MAP_H;
+        var anchor = unproject(activeMapBounds(), svgX, svgY);
+        zoomMapBy(now.dist / pinch.dist, anchor.lat, anchor.long);
+      }
+      pinch = now;
+      pinch.rect = rect;
+    }, { passive: false });
+    svg.addEventListener("touchend", function (ev) {
+      if (ev.touches.length < 2) pinch = null;
+    });
+    svg.addEventListener("touchcancel", function () { pinch = null; });
   }
 
   // ---------------- rendering: table ----------------
