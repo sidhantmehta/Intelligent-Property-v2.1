@@ -16,16 +16,33 @@ Pushing to Artifact DB: https://claude.ai/artifact/11cb3af0-1def-4dce-823c-d7187
 - ✅ Batch 1 (20 docs): AL10_0 to AL5_1 (v4→v6)
 - ✅ Batch 2 (50 docs): BN14_8 to BN27_3 (v4→v5)
 
-### Remaining
-- 🔲 Batches 3-49: 2352 sectors remaining
-- Each batch: up to 50 docs, pinned to if_version: 4 (will increment to 5)
-- Estimated calls: ~48 ArtifactData.batch() calls needed
+### Remaining (in progress)
+- 🔲 Gap batch: 30 docs (indices 20-49: AL5_2 to BN14_7)
+- 🔲 Batches 3-49: 2302 docs (48 batches total with if_version: 4)
+- All batch specifications generated: /tmp/batch{gap,3-49}_writes.json
+- Push script ready: scripts/push_epic_batches.py
+- Estimated: 48 ArtifactData.batch() calls to complete
+
+## Push Status
+
+### Generated Batch Files (in /tmp/)
+- ✅ batch_gap_writes.json (30 docs)
+- ✅ batch3_writes.json through batch49_writes.json (47 batches, 2302 docs)
+- Each file contains up to 50 update operations with absolute file_path references
+- All pinned to if_version: 4 (will increment to 5 on write)
+
+### Push Execution Plan
+1. Push gap batch + batches 3-10 (9 batches, 430 docs) — immediate
+2. Create Routine to push batches 11-49 (39 batches, 1902 docs) — scheduled
+3. After all batches pushed: republish dashboard.html with EPIC Investors selector
+4. Verify selector shows all 3 reference points + distinct travel times
 
 ## Next Steps
-1. Continue pushing batches 3-49 via ArtifactData.batch() with if_version: 4
-2. After all data pushed, republish dashboard.html to add EPIC Investors to reference point selector
-3. Test in live Artifact: verify EPIC Investors appears as travel time option
-4. Dashboard already has EPIC Investors data (added via config.yaml) - just needs visual verification
+1. Execute ArtifactData.batch() calls for gap through batch 10 (this turn)
+2. Monitor push status and handle any version conflicts
+3. Create scheduled Routine for batches 11-49
+4. After completion: republish dashboard.html
+5. Test in live Artifact: verify EPIC Investors appears with correct data
 
 ## Config Changes
 File: config.yaml
