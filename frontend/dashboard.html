@@ -448,7 +448,8 @@
   ];
   var TEXT_FILTER_OPS = [
     { key: "contains", label: "contains" },
-    { key: "=", label: "=" }
+    { key: "=", label: "=" },
+    { key: "!=", label: "&ne;" }
   ];
   var GEO_GROUPS = ["Inner London", "Greater London", "Home Counties"];
   var PAGE_SIZES = [25, 50, 100, "all"];
@@ -574,7 +575,9 @@
           if (f.value === "" || f.value == null) return true;
           var strVal = (cellValue(o, f.key) || "").toString().toLowerCase();
           var target2 = f.value.toString().toLowerCase();
-          return f.op === "=" ? strVal === target2 : strVal.indexOf(target2) !== -1;
+          if (f.op === "=") return strVal === target2;
+          if (f.op === "!=") return strVal !== target2;
+          return strVal.indexOf(target2) !== -1;
         }
         var v = cellValue(o, f.key);
         if (v == null || isNaN(v) || f.value === "" || f.value == null) return true;
