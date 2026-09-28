@@ -105,6 +105,7 @@
   .map-dot { cursor: pointer; stroke: #ffffff; stroke-width: 1.2; fill-opacity: 0.88; transition: r 0.1s ease, fill 0.1s ease; }
   .map-dot:hover { stroke: var(--accent); stroke-width: 2.5; fill-opacity: 1; }
   .map-dot.active { fill: #dc2626 !important; stroke: #7a1210; stroke-width: 2.5; fill-opacity: 1; }
+  .lasso-path { fill: var(--accent); fill-opacity: 0.10; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; pointer-events: none; }
   .map-grid line { stroke: #d3dbe2; stroke-width: 1; }
   .map-grid text { fill: #8a939c; font-size: 9px; font-family: var(--font-mono); }
   .map-land { fill: #f7f5ef; stroke: #c7cdd3; stroke-width: 0.6; }
@@ -120,9 +121,25 @@
   .map-wrap { position: relative; max-height: 460px; overflow: hidden; border-radius: 8px; }
   .map-wrap svg { cursor: grab; touch-action: pan-y; }
   .map-wrap svg.dragging { cursor: grabbing; }
+  /* The Map's .map-wrap caps height and clips overflow because that view
+     pans/zooms within a fixed viewport; the Graph tab doesn't pan, so let
+     its (taller, 640x480) plot size to its full aspect ratio instead of
+     being clipped by that same cap. */
+  .graph-wrap { max-height: none; overflow: visible; }
+  .graph-wrap svg { cursor: crosshair; touch-action: none; }
   @media (max-width: 640px) {
     .map-wrap { max-height: 220px; }
   }
+
+  /* ---------- map/graph tabs ---------- */
+  .map-tabbar { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .map-tab-btn {
+    padding: 6px 12px; border: none; background: none; color: var(--ink-2); font-size: 13px; font-weight: 600;
+    cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .map-tab-btn:hover { color: var(--ink); }
+  .map-tab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
+  .graph-legend-label { display: none; }
   .map-zoom-controls {
     position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 4;
   }
@@ -138,6 +155,7 @@
   }
 
   .legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: var(--muted); }
+  .legend .pill { margin-left: auto; }
   .legend .ramp { display: flex; height: 10px; border-radius: 3px; overflow: hidden; flex: 1; }
   .legend .ramp span { flex: 1; }
 
@@ -186,6 +204,10 @@
   }
   thead th:hover { color: var(--ink); }
   thead th .arrow { font-size: 10px; margin-left: 3px; color: var(--accent); }
+  thead th[draggable="true"] { cursor: grab; }
+  thead th.col-dragging { opacity: 0.4; }
+  thead th.col-drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+  thead th.col-drop-after { box-shadow: inset -2px 0 0 var(--accent); }
   tbody td { padding: 7px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
   tbody tr:hover { background: var(--surface-2); }
   tbody tr.active { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -258,31 +280,68 @@
   <div class="layout">
     <div>
       <div class="card" id="mapCard">
-        <h2>Map</h2>
-        <div class="hint" id="mapHint">Positioned by sector centroid, coloured by total score. Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.</div>
-        <div class="map-wrap" style="margin-top:10px;">
-          <svg id="mapSvg" viewBox="0 0 640 520" preserveAspectRatio="xMidYMid meet"></svg>
-          <div class="map-tooltip" id="mapTooltip"></div>
-          <div class="map-zoom-controls">
-            <button type="button" id="mapZoomIn" title="Zoom in">+</button>
-            <button type="button" id="mapZoomOut" title="Zoom out">−</button>
-            <button type="button" id="mapZoomReset" title="Reset view">⤢</button>
+        <div class="map-tabbar" role="tablist" aria-label="Map or graph view">
+          <button type="button" class="map-tab-btn active" id="mapTabBtn" data-tab="map" role="tab" aria-selected="true">Map</button>
+          <button type="button" class="map-tab-btn" id="graphTabBtn" data-tab="graph" role="tab" aria-selected="false">Graph</button>
+        </div>
+
+        <div id="mapTabPanel" role="tabpanel">
+          <div class="hint" id="mapHint">Positioned by sector centroid, coloured by total score. Click a marker to highlight it in the table. Scroll or use the buttons to zoom, drag to pan.</div>
+          <div class="map-wrap" id="mapWrap" style="margin-top:10px;">
+            <svg id="mapSvg" viewBox="0 0 640 520" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="map-tooltip" id="mapTooltip"></div>
+            <div class="map-zoom-controls">
+              <button type="button" id="mapZoomIn" title="Zoom in">+</button>
+              <button type="button" id="mapZoomOut" title="Zoom out">−</button>
+              <button type="button" id="mapZoomReset" title="Reset view">⤢</button>
+            </div>
+          </div>
+          <div class="legend">
+            <span>Weaker</span>
+            <span class="ramp" id="legendRamp"></span>
+            <span>Stronger</span>
+          </div>
+          <div class="map-colorby">
+            <label for="colorBySelect">Colour by</label>
+            <select id="colorBySelect"></select>
+            <label for="sizeBySelect" style="margin-left:10px;">Size by</label>
+            <select id="sizeBySelect"></select>
           </div>
         </div>
-        <div class="legend">
-          <span>Weaker</span>
-          <span class="ramp" id="legendRamp"></span>
-          <span>Stronger</span>
-        </div>
-        <div class="map-colorby">
-          <label for="colorBySelect">Colour by</label>
-          <select id="colorBySelect"></select>
+
+        <div id="graphTabPanel" role="tabpanel" hidden>
+          <div class="hint" id="graphHint">Pick which numeric fields to plot, then drag on the chart to lasso sectors — that filters the table below to just what's inside the loop. Click anywhere on the chart to clear the lasso.</div>
+          <div class="map-colorby" style="margin-top:10px;">
+            <label for="graphXSelect">X axis</label>
+            <select id="graphXSelect"></select>
+            <label for="graphYSelect" style="margin-left:10px;">Y axis</label>
+            <select id="graphYSelect"></select>
+          </div>
+          <div class="map-colorby" style="margin-top:6px;">
+            <label for="graphColorBySelect">Colour by</label>
+            <select id="graphColorBySelect"></select>
+            <label for="graphSizeBySelect" style="margin-left:10px;">Size by</label>
+            <select id="graphSizeBySelect"></select>
+          </div>
+          <div class="map-wrap graph-wrap" id="graphWrap" style="margin-top:10px;">
+            <svg id="graphSvg" viewBox="0 0 640 480" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="map-tooltip" id="graphTooltip"></div>
+          </div>
+          <div class="legend" id="graphLegendRow">
+            <span class="graph-legend-label">Weaker</span>
+            <span class="ramp" id="graphLegendRamp"></span>
+            <span class="graph-legend-label">Stronger</span>
+            <span id="lassoStatus" class="pill" style="display:none;">
+              <span id="lassoStatusText"></span>
+              <button type="button" id="clearLassoBtn" class="drill-close" style="margin-left:4px;" title="Clear lasso selection">✕</button>
+            </span>
+          </div>
         </div>
       </div>
 
       <div class="card">
         <h2>Scores by postcode sector</h2>
-        <div class="hint">Click a column header to sort. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is a HPI-adjusted, recency-weighted median for the property type selected below. £/m² is a real matched price — each Land Registry sale joined to its own EPC floor area by address — where a confident match exists; a "†" means no confident match was found and it falls back to dividing the sector's median price by its median EPC floor area (two separate figures, not a real per-house ratio). A "*" on either column means the sector had too few sales/matches and the outcode-level figure was used instead. Cheapest/priciest fare compare the sector's nearest stations' Monthly Season cost to the destination selected below (Anytime Day Return shown in the tooltip); a "†" means the monthly figure includes a Zones 1-6 Travelcard add-on (what most commuters from outside London actually buy) rather than being the plain rail-only fare.</div>
+        <div class="hint">Click a column header to sort, or drag a header to reorder columns. Each amenity/travel-time cell is shaded by its own normalized score, so you can see what's weak or strong for a given sector at a glance. A column whose weight is 0 shows greyed-out and italic — it still displays what's nearby, but doesn't count toward Total. Price is £/m² × the size (m²) entered below, so sectors are comparable at a consistent floor area — it falls back to the actual HPI-adjusted, recency-weighted median transaction price for the property type when no £/m² figure exists for a sector. £/m² is a real matched price — each Land Registry sale joined to its own EPC floor area by address — where a confident match exists; a "†" means no confident match was found and it falls back to dividing the sector's median price by its median EPC floor area (two separate figures, not a real per-house ratio). A "*" on either column means the sector had too few sales/matches and the outcode-level figure was used instead. Cheapest/priciest fare compare the sector's nearest stations' Monthly Season cost to the destination selected below (Anytime Day Return shown in the tooltip); a "†" means the monthly figure includes a Zones 1-6 Travelcard add-on (what most commuters from outside London actually buy) rather than being the plain rail-only fare.</div>
         <div class="btn-row" id="presetBar" style="margin-top:10px;">
           <button class="btn" id="presetHomeCounties" type="button">Preset: &lt;60 min to Zig Zag + Home Counties</button>
           <button class="btn" id="presetGrammar" type="button">Preset: &lt;60 min to Zig Zag + grammar score &gt;1</button>
@@ -313,6 +372,8 @@
           <input type="text" id="outcodeSearchInput" placeholder="e.g. SW11">
           <label for="townSearchInput" style="font-size:12px;color:var(--ink-2);margin-left:8px;">Town</label>
           <input type="text" id="townSearchInput" placeholder="e.g. Gerrards Cross">
+          <label for="sqmSizeInput" style="font-size:12px;color:var(--ink-2);margin-left:8px;">Price size (m²)</label>
+          <input type="number" id="sqmSizeInput" min="10" max="500" step="1" value="75" title="The floor area used to turn £/m² into the Price column, so sectors are comparable at a consistent size.">
         </div>
         <div class="filter-bar" id="filterBar" style="margin-top:10px;"></div>
         <div class="compare-bar" id="compareBar" style="margin-top:10px;"></div>
@@ -436,7 +497,17 @@
     townSearch: "",
     selected: new Set(),
     compareList: [],
-    showCompareOnly: false
+    showCompareOnly: false,
+    sqmSize: 75,
+    columnOrder: null,
+    sizeBy: "",
+    activeTab: "map",
+    graphX: "price",
+    graphY: "total_score",
+    graphColorBy: "total_score",
+    graphSizeBy: "",
+    lassoSectors: null,
+    lassoPath: null
   };
 
   var FILTER_OPS = [
@@ -475,9 +546,16 @@
 
   function travelKey(name) { return "travel_time::" + name; }
 
+  // Price is £/m² x the user-entered "Price size (m²)" field (state.sqmSize),
+  // so sectors are compared at one consistent floor area rather than
+  // whatever size happened to sell -- see the sqmSizeInput wiring. Falls
+  // back to the real median transaction price when no £/m² figure exists
+  // for this sector/property type, or no size has been entered.
   function priceValue(o) {
     var p = o.prices && o.prices[state.propertyType];
-    return (p && p.median_price != null) ? p.median_price : null;
+    if (!p) return null;
+    if (p.price_per_sqm != null && state.sqmSize) return p.price_per_sqm * state.sqmSize;
+    return p.median_price != null ? p.median_price : null;
   }
 
   // price_per_sqm comes from a separate EPC-derived source (floor area)
@@ -540,11 +618,22 @@
 
   function cellValue(o, key) {
     if (key === "total_score") return o.total_score;
+    if (key === "price") return priceValue(o);
+    if (key === "price_per_sqm") return pricePerSqmValue(o);
     if (key === "fare_cheapest") return fareExtremeValue(o, "cheapest");
     if (key === "fare_priciest") return fareExtremeValue(o, "priciest");
     if (key === "sector" || key === "borough" || key === "geo_group") return o[key] || "";
     var cell = o.categories[key];
     return cell ? cell.raw_score : null;
+  }
+
+  // The numeric fields offered for the Map's "Size by" and both of the
+  // Graph tab's pickers (X/Y/Colour by/Size by) -- filterableColumns()
+  // minus its text fields, plus Price and £/m² (not offered as table
+  // filters or as the Map's "Colour by", but useful to plot/size by here).
+  function numericFieldColumns() {
+    var base = filterableColumns().filter(function (c) { return !c.isText; });
+    return [{ key: "price", label: "Price" }, { key: "price_per_sqm", label: "£/m²" }].concat(base);
   }
 
   function applyFilters(list) {
@@ -565,6 +654,13 @@
     }
     if (state.showCompareOnly) {
       list = list.filter(function (o) { return state.compareList.indexOf(o.sector) !== -1; });
+    }
+    // Graph tab lasso selection -- same "narrow the visible set by sector
+    // id" mechanism as showCompareOnly above, so it automatically applies
+    // to the table, the Map tab and the Graph tab's own dots together.
+    if (state.lassoSectors) {
+      var lassoSet = state.lassoSectors;
+      list = list.filter(function (o) { return lassoSet.indexOf(o.sector) !== -1; });
     }
     if (!state.filters.length) return list;
     var cols = filterableColumns();
@@ -739,11 +835,51 @@
   // Smallest zoomed-in span, as a fraction of the full data span -- caps
   // how far zoom-in can go so it can't collapse to nothing.
   var MAP_MIN_SPAN_FRACTION = 0.03;
+  var MAP_R_MIN = 3, MAP_R_MAX = 11, MAP_R_DEFAULT = 6;
 
   function colorValue(o, key) {
     if (key === "total_score") return o.total_score;
     var cell = o.categories[key];
     return cell ? cell.normalized_score : 0;
+  }
+
+  // Shared by the Map tab's "Size by" and the Graph tab's own size-by:
+  // given the currently visible sectors and a numeric field key, returns a
+  // per-sector radius function, min-max normalized (via the same
+  // minMaxNormalize() the score maths uses) across just that visible set.
+  // A blank key, or a sector missing that field, falls back to the fixed
+  // default radius rather than guessing.
+  function radiusScale(list, key) {
+    if (!key) return function () { return MAP_R_DEFAULT; };
+    var pairs = [];
+    list.forEach(function (o) {
+      var v = cellValue(o, key);
+      if (v != null && !isNaN(v)) pairs.push({ id: o.sector, value: v });
+    });
+    var norm = minMaxNormalize(pairs, true);
+    return function (o) {
+      return norm.hasOwnProperty(o.sector) ? (MAP_R_MIN + norm[o.sector] * (MAP_R_MAX - MAP_R_MIN)) : MAP_R_DEFAULT;
+    };
+  }
+
+  // Shared by the Graph tab's "Colour by". The Map tab's own "Colour by"
+  // keeps its existing colorValue()-based behaviour (anchored to the
+  // model's precomputed normalized_score across the FULL dataset) so that
+  // feature stays unchanged; this variant instead normalizes raw
+  // cellValue()s across whatever's currently visible, which is what lets
+  // the Graph colour by fields (fares, Price, £/m²) that have no
+  // precomputed normalized_score.
+  function colorScale(list, key) {
+    if (!key) return function () { return "var(--accent)"; };
+    var pairs = [];
+    list.forEach(function (o) {
+      var v = cellValue(o, key);
+      if (v != null && !isNaN(v)) pairs.push({ id: o.sector, value: v });
+    });
+    var norm = minMaxNormalize(pairs, true);
+    return function (o) {
+      return norm.hasOwnProperty(o.sector) ? rampColor(norm[o.sector]) : "transparent";
+    };
   }
 
   // The full-data bounding box -- the "fit all" view, and the ceiling
@@ -859,12 +995,13 @@
     }
 
     var activeDot = null;
+    var sizeFn = radiusScale(visible, state.sizeBy);
     visible.forEach(function (o) {
       var xy = project(o);
       var c = document.createElementNS(ns, "circle");
       c.setAttribute("cx", xy[0].toFixed(1));
       c.setAttribute("cy", xy[1].toFixed(1));
-      c.setAttribute("r", o.sector === state.activeSector ? 8 : 6);
+      c.setAttribute("r", (sizeFn(o) + (o.sector === state.activeSector ? 2 : 0)).toFixed(1));
       c.setAttribute("fill", rampColor(colorValue(o, state.colorBy)));
       c.setAttribute("class", "map-dot" + (o.sector === state.activeSector ? " active" : ""));
       c.dataset.sector = o.sector;
@@ -981,7 +1118,9 @@
     var hint = document.getElementById("mapHint");
     if (!hint) return;
     var label = (filterableColumns().find(function (c) { return c.key === state.colorBy; }) || {}).label || "total score";
-    hint.textContent = "Positioned by sector centroid, coloured by " + label.toLowerCase() +
+    var sizeCol = numericFieldColumns().find(function (c) { return c.key === state.sizeBy; });
+    var sizeText = sizeCol ? (", sized by " + sizeCol.label.toLowerCase()) : "";
+    hint.textContent = "Positioned by sector centroid, coloured by " + label.toLowerCase() + sizeText +
       ". Click a marker to highlight it in the table. Scroll or drag to pan on desktop; on a phone, use two fingers to pan/zoom the map — one finger scrolls the page.";
   }
 
@@ -1002,12 +1141,37 @@
     updateMapHint();
   }
 
+  function renderSizeBySelect() {
+    var select = document.getElementById("sizeBySelect");
+    if (!select) return;
+    var cols = numericFieldColumns();
+    if (state.sizeBy && !cols.some(function (c) { return c.key === state.sizeBy; })) {
+      state.sizeBy = "";
+    }
+    select.innerHTML = "";
+    var noneOpt = document.createElement("option");
+    noneOpt.value = ""; noneOpt.textContent = "None (fixed size)";
+    select.appendChild(noneOpt);
+    cols.forEach(function (c) {
+      var opt = document.createElement("option");
+      opt.value = c.key; opt.textContent = c.label;
+      if (c.key === state.sizeBy) opt.selected = true;
+      select.appendChild(opt);
+    });
+    updateMapHint();
+  }
+
   function wireMap() {
     document.getElementById("mapZoomIn").addEventListener("click", function () { zoomMapBy(1.6); });
     document.getElementById("mapZoomOut").addEventListener("click", function () { zoomMapBy(1 / 1.6); });
     document.getElementById("mapZoomReset").addEventListener("click", resetMapView);
     document.getElementById("colorBySelect").addEventListener("change", function (ev) {
       state.colorBy = ev.target.value;
+      updateMapHint();
+      renderMap();
+    });
+    document.getElementById("sizeBySelect").addEventListener("change", function (ev) {
+      state.sizeBy = ev.target.value;
       updateMapHint();
       renderMap();
     });
@@ -1081,6 +1245,365 @@
       if (ev.touches.length < 2) pinch = null;
     });
     svg.addEventListener("touchcancel", function () { pinch = null; });
+  }
+
+  // ---------------- rendering: map/graph tabs ----------------
+  function setActiveTab(tab) {
+    state.activeTab = tab;
+    var mapPanel = document.getElementById("mapTabPanel");
+    var graphPanel = document.getElementById("graphTabPanel");
+    var mapBtn = document.getElementById("mapTabBtn");
+    var graphBtn = document.getElementById("graphTabBtn");
+    if (mapPanel) mapPanel.hidden = tab !== "map";
+    if (graphPanel) graphPanel.hidden = tab !== "graph";
+    if (mapBtn) { mapBtn.classList.toggle("active", tab === "map"); mapBtn.setAttribute("aria-selected", tab === "map" ? "true" : "false"); }
+    if (graphBtn) { graphBtn.classList.toggle("active", tab === "graph"); graphBtn.setAttribute("aria-selected", tab === "graph" ? "true" : "false"); }
+    if (tab === "map") renderMap(); else renderGraph();
+  }
+
+  function wireTabs() {
+    var mapBtn = document.getElementById("mapTabBtn");
+    var graphBtn = document.getElementById("graphTabBtn");
+    if (mapBtn) mapBtn.addEventListener("click", function () { setActiveTab("map"); });
+    if (graphBtn) graphBtn.addEventListener("click", function () { setActiveTab("graph"); });
+  }
+
+  // ---------------- rendering: graph tab ----------------
+  // A simple linear XY scatter -- one dot per visible sector, at
+  // (cellValue(o, graphX), cellValue(o, graphY)) -- sharing rampColor()/
+  // radiusScale()/colorScale() with the Map tab where practical (see those
+  // functions' comments for what's shared and what's deliberately not).
+  var GRAPH_W = 640, GRAPH_H = 480;
+  var GRAPH_PAD_L = 54, GRAPH_PAD_R = 14, GRAPH_PAD_T = 14, GRAPH_PAD_B = 34;
+
+  // The last render's dot positions in SVG space, {sector, x, y}[] -- used
+  // to hit-test the lasso polygon at mouseup without recomputing the plot.
+  var graphDots = [];
+  // In-progress lasso drag: {points: [[x,y],...], moved: bool, rect}, or
+  // null when the mouse isn't down on the graph.
+  var lassoDrag = null;
+
+  function formatAxisNumber(n) {
+    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + "k";
+    return (Math.round(n * 100) / 100).toString();
+  }
+
+  function renderGraphSelects() {
+    var cols = numericFieldColumns();
+    function fillAxisSelect(id, current, fallbackKey) {
+      var select = document.getElementById(id);
+      if (!select) return current;
+      if (!cols.some(function (c) { return c.key === current; })) current = fallbackKey;
+      select.innerHTML = "";
+      cols.forEach(function (c) {
+        var opt = document.createElement("option");
+        opt.value = c.key; opt.textContent = c.label;
+        if (c.key === current) opt.selected = true;
+        select.appendChild(opt);
+      });
+      return current;
+    }
+    function fillPickerSelect(id, current) {
+      var select = document.getElementById(id);
+      if (!select) return current;
+      if (current && !cols.some(function (c) { return c.key === current; })) current = "";
+      select.innerHTML = "";
+      var noneOpt = document.createElement("option");
+      noneOpt.value = ""; noneOpt.textContent = "None";
+      select.appendChild(noneOpt);
+      cols.forEach(function (c) {
+        var opt = document.createElement("option");
+        opt.value = c.key; opt.textContent = c.label;
+        if (c.key === current) opt.selected = true;
+        select.appendChild(opt);
+      });
+      return current;
+    }
+    state.graphX = fillAxisSelect("graphXSelect", state.graphX, "price");
+    state.graphY = fillAxisSelect("graphYSelect", state.graphY, "total_score");
+    state.graphColorBy = fillPickerSelect("graphColorBySelect", state.graphColorBy);
+    state.graphSizeBy = fillPickerSelect("graphSizeBySelect", state.graphSizeBy);
+  }
+
+  function drawGraphAxes(svg, ns, xMin, xMax, yMin, yMax, project, xLabel, yLabel) {
+    var g = document.createElementNS(ns, "g");
+    g.setAttribute("class", "map-grid");
+    var xStep = niceStep(xMax - xMin, 5);
+    var yStep = niceStep(yMax - yMin, 5);
+
+    for (var xv = Math.ceil(xMin / xStep) * xStep; xv <= xMax; xv += xStep) {
+      var x = project(xv, yMin)[0];
+      var line = document.createElementNS(ns, "line");
+      line.setAttribute("x1", x.toFixed(1)); line.setAttribute("x2", x.toFixed(1));
+      line.setAttribute("y1", GRAPH_PAD_T); line.setAttribute("y2", GRAPH_H - GRAPH_PAD_B);
+      g.appendChild(line);
+      var label = document.createElementNS(ns, "text");
+      label.setAttribute("x", x.toFixed(1)); label.setAttribute("y", GRAPH_H - GRAPH_PAD_B + 14);
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = formatAxisNumber(xv);
+      g.appendChild(label);
+    }
+    for (var yv = Math.ceil(yMin / yStep) * yStep; yv <= yMax; yv += yStep) {
+      var y = project(xMin, yv)[1];
+      var line2 = document.createElementNS(ns, "line");
+      line2.setAttribute("x1", GRAPH_PAD_L); line2.setAttribute("x2", GRAPH_W - GRAPH_PAD_R);
+      line2.setAttribute("y1", y.toFixed(1)); line2.setAttribute("y2", y.toFixed(1));
+      g.appendChild(line2);
+      var label2 = document.createElementNS(ns, "text");
+      label2.setAttribute("x", GRAPH_PAD_L - 6); label2.setAttribute("y", (y + 3).toFixed(1));
+      label2.setAttribute("text-anchor", "end");
+      label2.textContent = formatAxisNumber(yv);
+      g.appendChild(label2);
+    }
+    svg.appendChild(g);
+
+    var xTitle = document.createElementNS(ns, "text");
+    xTitle.setAttribute("x", (GRAPH_PAD_L + (GRAPH_W - GRAPH_PAD_L - GRAPH_PAD_R) / 2).toFixed(1));
+    xTitle.setAttribute("y", GRAPH_H - 4);
+    xTitle.setAttribute("text-anchor", "middle");
+    xTitle.setAttribute("class", "map-label-county");
+    xTitle.textContent = xLabel;
+    svg.appendChild(xTitle);
+
+    var yTitle = document.createElementNS(ns, "text");
+    yTitle.setAttribute("x", 12); yTitle.setAttribute("y", 14);
+    yTitle.setAttribute("class", "map-label-county");
+    yTitle.textContent = yLabel;
+    svg.appendChild(yTitle);
+  }
+
+  function showGraphTooltip(ev, o, xLabel, yLabel, xVal, yVal) {
+    var tip = document.getElementById("graphTooltip");
+    if (!tip) return;
+    tip.textContent = o.sector + " · " + xLabel + " " + formatAxisNumber(xVal) + " · " + yLabel + " " + formatAxisNumber(yVal);
+    tip.classList.add("show");
+    moveGraphTooltip(ev);
+  }
+  function moveGraphTooltip(ev) {
+    var tip = document.getElementById("graphTooltip");
+    var wrap = document.getElementById("graphWrap");
+    if (!tip || !wrap) return;
+    var rect = wrap.getBoundingClientRect();
+    tip.style.left = (ev.clientX - rect.left) + "px";
+    tip.style.top = (ev.clientY - rect.top) + "px";
+  }
+  function hideGraphTooltip() {
+    var tip = document.getElementById("graphTooltip");
+    if (tip) tip.classList.remove("show");
+  }
+
+  function renderGraphLegend() {
+    var ramp = document.getElementById("graphLegendRamp");
+    if (ramp) ramp.innerHTML = SEQ_STEPS.map(function (c) { return '<span style="background:' + c + '"></span>'; }).join("");
+    var legendRow = document.getElementById("graphLegendRow");
+    if (legendRow) {
+      Array.prototype.forEach.call(legendRow.querySelectorAll(".graph-legend-label, .ramp"), function (el) {
+        el.style.display = state.graphColorBy ? "" : "none";
+      });
+    }
+  }
+
+  function renderLassoStatus() {
+    var pill = document.getElementById("lassoStatus");
+    var text = document.getElementById("lassoStatusText");
+    if (!pill || !text) return;
+    // .pill sets its own "display", which -- at equal specificity --
+    // otherwise wins the cascade over the [hidden] UA rule, so toggle
+    // "display" directly here rather than relying on the hidden attribute.
+    if (state.lassoSectors) {
+      text.textContent = "Lasso: " + state.lassoSectors.length + " selected";
+      pill.style.display = "";
+    } else {
+      pill.style.display = "none";
+    }
+  }
+
+  // Draws (or updates) the translucent lasso outline from state.lassoPath,
+  // re-used both for the full render and for the live outline while
+  // dragging (drawLassoOverlayOnly() below just repositions the same
+  // element instead of re-rendering the whole chart on every mousemove).
+  function drawLassoOverlayOnly() {
+    var svg = document.getElementById("graphSvg");
+    if (!svg || !state.lassoPath) return;
+    var ns = "http://www.w3.org/2000/svg";
+    var el = svg.querySelector(".lasso-path");
+    if (!el) {
+      el = document.createElementNS(ns, "polygon");
+      el.setAttribute("class", "lasso-path");
+      svg.appendChild(el);
+    } else {
+      svg.appendChild(el); // keep it on top of the dots
+    }
+    el.setAttribute("points", state.lassoPath.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" "));
+  }
+
+  function renderGraph() {
+    if (state.activeTab !== "graph") return;
+    renderGraphSelects();
+    var svg = document.getElementById("graphSvg");
+    if (!svg) return;
+    svg.innerHTML = "";
+    graphDots = [];
+    renderLassoStatus();
+    if (!state.sectors.length) {
+      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--muted)" font-size="13">' +
+        (state.sectorsError ? "Couldn't load results: " + escapeHtml(state.sectorsError) : "No results to plot yet") + '</text>';
+      return;
+    }
+
+    var list = visibleSectors();
+    var ns = "http://www.w3.org/2000/svg";
+    var xKey = state.graphX, yKey = state.graphY;
+
+    var points = list.map(function (o) {
+      return { o: o, x: cellValue(o, xKey), y: cellValue(o, yKey) };
+    }).filter(function (p) { return p.x != null && !isNaN(p.x) && p.y != null && !isNaN(p.y); });
+
+    if (!points.length) {
+      var note = document.createElementNS(ns, "text");
+      note.setAttribute("x", "50%"); note.setAttribute("y", "50%");
+      note.setAttribute("text-anchor", "middle"); note.setAttribute("fill", "#8a939c"); note.setAttribute("font-size", "13");
+      note.textContent = "No sectors have both fields to plot.";
+      svg.appendChild(note);
+      renderGraphLegend();
+      return;
+    }
+
+    var xVals = points.map(function (p) { return p.x; });
+    var yVals = points.map(function (p) { return p.y; });
+    var xMin = Math.min.apply(null, xVals), xMax = Math.max.apply(null, xVals);
+    var yMin = Math.min.apply(null, yVals), yMax = Math.max.apply(null, yVals);
+    if (xMin === xMax) { xMin -= 1; xMax += 1; }
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+    // Pad the domain a little so extreme points don't sit right on the axis.
+    var xPad = (xMax - xMin) * 0.05, yPad = (yMax - yMin) * 0.05;
+    xMin -= xPad; xMax += xPad; yMin -= yPad; yMax += yPad;
+
+    function projectXY(x, y) {
+      var px = GRAPH_PAD_L + ((x - xMin) / (xMax - xMin)) * (GRAPH_W - GRAPH_PAD_L - GRAPH_PAD_R);
+      var py = (GRAPH_H - GRAPH_PAD_B) - ((y - yMin) / (yMax - yMin)) * (GRAPH_H - GRAPH_PAD_B - GRAPH_PAD_T);
+      return [px, py];
+    }
+
+    var xLabel = (numericFieldColumns().find(function (c) { return c.key === xKey; }) || {}).label || xKey;
+    var yLabel = (numericFieldColumns().find(function (c) { return c.key === yKey; }) || {}).label || yKey;
+    drawGraphAxes(svg, ns, xMin, xMax, yMin, yMax, projectXY, xLabel, yLabel);
+
+    var sectorsOnly = points.map(function (p) { return p.o; });
+    var colorFn = colorScale(sectorsOnly, state.graphColorBy);
+    var sizeFn = radiusScale(sectorsOnly, state.graphSizeBy);
+
+    points.forEach(function (p) {
+      var xy = projectXY(p.x, p.y);
+      var r = sizeFn(p.o) + (p.o.sector === state.activeSector ? 2 : 0);
+      var c = document.createElementNS(ns, "circle");
+      c.setAttribute("cx", xy[0].toFixed(1));
+      c.setAttribute("cy", xy[1].toFixed(1));
+      c.setAttribute("r", r.toFixed(1));
+      c.setAttribute("fill", colorFn(p.o));
+      c.setAttribute("class", "map-dot" + (p.o.sector === state.activeSector ? " active" : ""));
+      c.dataset.sector = p.o.sector;
+      c.addEventListener("mouseenter", function (ev) { showGraphTooltip(ev, p.o, xLabel, yLabel, p.x, p.y); });
+      c.addEventListener("mousemove", moveGraphTooltip);
+      c.addEventListener("mouseleave", hideGraphTooltip);
+      svg.appendChild(c);
+      graphDots.push({ sector: p.o.sector, x: xy[0], y: xy[1] });
+    });
+
+    if (state.lassoPath && state.lassoPath.length > 2) drawLassoOverlayOnly();
+    renderGraphLegend();
+  }
+
+  // Ray-casting point-in-polygon test (even-odd rule); poly is [[x,y],...]
+  // and need not be explicitly closed.
+  function pointInPolygon(x, y, poly) {
+    var inside = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+      var intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function clearLasso() {
+    state.lassoSectors = null;
+    state.lassoPath = null;
+    state.currentPage = 1;
+    renderGraph();
+    renderTable();
+    renderMap();
+  }
+
+  function wireGraph() {
+    document.getElementById("graphXSelect").addEventListener("change", function (ev) { state.graphX = ev.target.value; renderGraph(); });
+    document.getElementById("graphYSelect").addEventListener("change", function (ev) { state.graphY = ev.target.value; renderGraph(); });
+    document.getElementById("graphColorBySelect").addEventListener("change", function (ev) { state.graphColorBy = ev.target.value; renderGraph(); });
+    document.getElementById("graphSizeBySelect").addEventListener("change", function (ev) { state.graphSizeBy = ev.target.value; renderGraph(); });
+    document.getElementById("clearLassoBtn").addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      clearLasso();
+    });
+
+    var svg = document.getElementById("graphSvg");
+    var LASSO_MOVE_THRESHOLD = 3;
+
+    function svgPointFromEvent(ev, rect) {
+      return [
+        (ev.clientX - rect.left) / rect.width * GRAPH_W,
+        (ev.clientY - rect.top) / rect.height * GRAPH_H
+      ];
+    }
+
+    svg.addEventListener("mousedown", function (ev) {
+      if (ev.button !== 0 || !state.sectors.length) return;
+      // Starting any new interaction on the graph while a lasso filter is
+      // active clears it first (and redraws against the full visible set),
+      // so a fresh drag always lassoes from what's really on screen rather
+      // than progressively narrowing an old selection.
+      if (state.lassoSectors) {
+        state.lassoSectors = null;
+        state.lassoPath = null;
+        renderGraph();
+        renderTable();
+        renderMap();
+      }
+      var rect = svg.getBoundingClientRect();
+      lassoDrag = { points: [svgPointFromEvent(ev, rect)], moved: false, rect: rect };
+      ev.preventDefault();
+    });
+    window.addEventListener("mousemove", function (ev) {
+      if (!lassoDrag) return;
+      var pt = svgPointFromEvent(ev, lassoDrag.rect);
+      var first = lassoDrag.points[0];
+      var last = lassoDrag.points[lassoDrag.points.length - 1];
+      if (!lassoDrag.moved && Math.hypot(pt[0] - first[0], pt[1] - first[1]) > LASSO_MOVE_THRESHOLD) {
+        lassoDrag.moved = true;
+      }
+      if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) > 1.5) {
+        lassoDrag.points.push(pt);
+        if (lassoDrag.moved) {
+          state.lassoPath = lassoDrag.points;
+          drawLassoOverlayOnly();
+        }
+      }
+    });
+    window.addEventListener("mouseup", function () {
+      if (!lassoDrag) return;
+      if (lassoDrag.moved && lassoDrag.points.length > 2) {
+        var poly = lassoDrag.points;
+        var hits = graphDots.filter(function (d) { return pointInPolygon(d.x, d.y, poly); }).map(function (d) { return d.sector; });
+        state.lassoSectors = hits;
+        state.lassoPath = poly;
+        state.currentPage = 1;
+        renderGraph();
+        renderTable();
+        renderMap();
+      } else {
+        clearLasso();
+      }
+      lassoDrag = null;
+    });
   }
 
   // ---------------- rendering: table ----------------
@@ -1226,12 +1749,14 @@
         renderFilters();
         renderTable();
         renderMap();
+        renderGraph();
       } else if (ev.target.classList.contains("remove")) {
         state.filters.splice(Number(ev.target.dataset.idx), 1);
         state.currentPage = 1;
         renderFilters();
         renderTable();
         renderMap();
+        renderGraph();
       }
     });
     bar.addEventListener("input", function (ev) {
@@ -1250,6 +1775,7 @@
       }
       renderTable();
       renderMap();
+      renderGraph();
     });
   }
 
@@ -1259,16 +1785,21 @@
       state.currentPage = 1;
       renderTable();
       renderMap();
+      renderGraph();
     });
 
     document.getElementById("propertyTypeSelect").addEventListener("change", function (ev) {
       state.propertyType = ev.target.value;
       renderTable();
+      renderMap();
+      renderGraph();
     });
 
     document.getElementById("fareRefPointSelect").addEventListener("change", function (ev) {
       state.fareRefPoint = ev.target.value;
       renderTable();
+      renderMap();
+      renderGraph();
     });
 
     function applyPreset(filters, geoGroupFilter) {
@@ -1278,6 +1809,7 @@
       renderFilters();
       renderTable();
       renderMap();
+      renderGraph();
     }
 
     document.getElementById("presetHomeCounties").addEventListener("click", function () {
@@ -1304,11 +1836,27 @@
         state.currentPage = 1;
         renderTable();
         renderMap();
+        renderGraph();
       });
     }
     bindTextFilter("sectorSearchInput", "sectorSearch");
     bindTextFilter("outcodeSearchInput", "outcodeSearch");
     bindTextFilter("townSearchInput", "townSearch");
+  }
+
+  // The Price column's size input -- see priceValue()/renderPriceCell().
+  // Price is also one of the Map's "Size by" and the Graph tab's field
+  // options (numericFieldColumns()), so a size change can move those too.
+  function wireSqmInput() {
+    var input = document.getElementById("sqmSizeInput");
+    if (!input) return;
+    input.addEventListener("input", function (ev) {
+      var v = Number(ev.target.value);
+      state.sqmSize = (ev.target.value !== "" && !isNaN(v) && v > 0) ? v : null;
+      renderTable();
+      renderMap();
+      renderGraph();
+    });
   }
 
   // ---------------- rendering: compare list ----------------
@@ -1386,6 +1934,7 @@
         state.currentPage = 1;
         renderTable();
         renderMap();
+        renderGraph();
       }
     });
     bar.addEventListener("change", function (ev) {
@@ -1394,6 +1943,7 @@
         state.currentPage = 1;
         renderTable();
         renderMap();
+        renderGraph();
       }
     });
   }
@@ -1464,9 +2014,88 @@
     });
   }
 
+  // Reorderable set = every column except the leading Sector column (kept
+  // fixed since it's sticky/frozen alongside the select checkbox column --
+  // see .sector-col in the CSS). state.columnOrder is null (default order)
+  // until the first drop, then holds the full ordered key list; a key it
+  // doesn't recognise (e.g. a category added after a config change) is
+  // appended at the end rather than dropped.
+  function reorderableColumns() {
+    return FIXED_COLUMNS.slice(1).concat(columns());
+  }
+  function orderedColumns() {
+    var base = reorderableColumns();
+    if (!state.columnOrder) return base;
+    var byKey = {};
+    base.forEach(function (c) { byKey[c.key] = c; });
+    var seen = {};
+    var ordered = [];
+    state.columnOrder.forEach(function (k) {
+      if (byKey.hasOwnProperty(k) && !seen[k]) { ordered.push(byKey[k]); seen[k] = true; }
+    });
+    base.forEach(function (c) { if (!seen[c.key]) ordered.push(c); });
+    return ordered;
+  }
+
+  // Dragged column's key, live for the duration of one HTML5 drag gesture.
+  var draggingColKey = null;
+
+  function wireColumnDrag(th, key) {
+    th.addEventListener("dragstart", function (ev) {
+      draggingColKey = key;
+      th.classList.add("col-dragging");
+      if (ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = "move";
+        try { ev.dataTransfer.setData("text/plain", key); } catch (e) { /* Safari needs a set call even if unused */ }
+      }
+    });
+    th.addEventListener("dragend", function () {
+      th.classList.remove("col-dragging");
+      clearColumnDropIndicators();
+      draggingColKey = null;
+    });
+    th.addEventListener("dragover", function (ev) {
+      if (!draggingColKey || draggingColKey === key) return;
+      ev.preventDefault();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      var rect = th.getBoundingClientRect();
+      var before = (ev.clientX - rect.left) < rect.width / 2;
+      clearColumnDropIndicators();
+      th.classList.add(before ? "col-drop-before" : "col-drop-after");
+    });
+    th.addEventListener("drop", function (ev) {
+      ev.preventDefault();
+      if (!draggingColKey || draggingColKey === key) return;
+      var rect = th.getBoundingClientRect();
+      var before = (ev.clientX - rect.left) < rect.width / 2;
+      moveColumn(draggingColKey, key, before);
+      clearColumnDropIndicators();
+    });
+  }
+
+  function clearColumnDropIndicators() {
+    var head = document.getElementById("tableHeadRow");
+    if (!head) return;
+    Array.prototype.forEach.call(head.querySelectorAll(".col-drop-before, .col-drop-after"), function (el) {
+      el.classList.remove("col-drop-before", "col-drop-after");
+    });
+  }
+
+  function moveColumn(draggedKey, targetKey, before) {
+    var order = orderedColumns().map(function (c) { return c.key; });
+    var from = order.indexOf(draggedKey);
+    if (from === -1) return;
+    order.splice(from, 1);
+    var to = order.indexOf(targetKey);
+    if (to === -1) order.push(draggedKey);
+    else order.splice(before ? to : to + 1, 0, draggedKey);
+    state.columnOrder = order;
+    renderTable();
+  }
+
   function renderTableHead() {
     var row = document.getElementById("tableHeadRow");
-    var cols = FIXED_COLUMNS.concat(columns());
+    var cols = [FIXED_COLUMNS[0]].concat(orderedColumns());
     row.innerHTML = "";
 
     var selectTh = document.createElement("th");
@@ -1488,7 +2117,14 @@
     cols.forEach(function (c) {
       var th = document.createElement("th");
       th.textContent = c.label;
-      if (c.key === "sector") th.className = "sector-col";
+      th.dataset.colKey = c.key;
+      if (c.key === "sector") {
+        th.className = "sector-col";
+      } else {
+        th.draggable = true;
+        th.title = "Drag to reorder columns";
+        wireColumnDrag(th, c.key);
+      }
       if (state.sortKey === c.key) {
         var arrow = document.createElement("span");
         arrow.className = "arrow";
@@ -1508,6 +2144,7 @@
   function renderTable() {
     renderTableHead();
     var cols = columns();
+    var orderedCols = orderedColumns();
     var body = document.getElementById("tableBody");
     body.innerHTML = "";
     if (!state.sectors.length) {
@@ -1570,122 +2207,8 @@
       tdSector.className = "outcode sector-col"; tdSector.textContent = o.sector;
       tr.appendChild(tdSector);
 
-      var tdOut = document.createElement("td");
-      tdOut.textContent = o.outcode;
-      tr.appendChild(tdOut);
-
-      var tdTown = document.createElement("td");
-      tdTown.textContent = o.town || "–";
-      tr.appendChild(tdTown);
-
-      var tdBorough = document.createElement("td");
-      tdBorough.textContent = o.borough || "–";
-      tr.appendChild(tdBorough);
-
-      var tdGroup = document.createElement("td");
-      tdGroup.textContent = o.geo_group || "–";
-      tr.appendChild(tdGroup);
-
-      var tdPrice = document.createElement("td");
-      tdPrice.className = "price";
-      var priceInfo = o.prices && o.prices[state.propertyType];
-      if (priceInfo && priceInfo.median_price != null) {
-        tdPrice.textContent = formatPrice(priceInfo.median_price) + (priceInfo.grain === "outcode" ? " *" : "");
-        tdPrice.title = (priceInfo.grain === "outcode"
-          ? "Sector had too few sales — backed off to the outcode-level estimate. "
-          : "") + priceInfo.transaction_count + " comparable sale(s) used.";
-      } else {
-        tdPrice.textContent = "–";
-        tdPrice.title = "No price data for this property type.";
-      }
-      tr.appendChild(tdPrice);
-
-      var tdSqm = document.createElement("td");
-      tdSqm.className = "price";
-      if (priceInfo && priceInfo.price_per_sqm != null) {
-        // Two independent caveats can apply to this number, so they get
-        // two independent symbols: "*" = backed off to the outcode level
-        // (same meaning as the Price column's "*"), "†" = this is the
-        // ESTIMATED figure (sector's median price divided by its median
-        // EPC floor area, from unrelated properties) because no confident
-        // address match was found -- not a real per-house price/m². Its
-        // absence means the number came from actual matched sales.
-        var isMatched = priceInfo.price_per_sqm_method === "matched_sales";
-        var grain = isMatched ? priceInfo.price_per_sqm_grain : priceInfo.floor_area_grain;
-        var suffix = (grain === "outcode" ? " *" : "") + (isMatched ? "" : " †");
-        tdSqm.textContent = formatPricePerSqm(priceInfo.price_per_sqm) + suffix;
-
-        var titleParts = [];
-        if (isMatched) {
-          titleParts.push("From " + priceInfo.price_per_sqm_matched_count + " real matched sale(s) — each a Land Registry sale joined to its own EPC floor area by address.");
-          if (grain === "outcode") titleParts.push("Sector had too few matched sales — backed off to the outcode-level figure.");
-          if (priceInfo.price_per_sqm_by_size && priceInfo.price_per_sqm_by_size.length) {
-            titleParts.push("By size: " + priceInfo.price_per_sqm_by_size.map(function (b) {
-              return b.size_bin_m2 + "–" + (b.size_bin_m2 + 100) + "m²: " + formatPricePerSqm(b.median_price_per_sqm) + " (" + b.matched_count + ")";
-            }).join(", "));
-          }
-        } else {
-          titleParts.push("Estimated: this sector's median price ÷ its median EPC floor area — two separate figures, not a real per-house ratio (no confident address match found).");
-          if (grain === "outcode") titleParts.push("Sector had too few EPCs on file — backed off to the outcode-level median floor area.");
-          titleParts.push("Median floor area " + Math.round(priceInfo.median_floor_area_m2) + " m² from " + priceInfo.floor_area_certificate_count + " EPC certificate(s).");
-        }
-        tdSqm.title = titleParts.join(" ");
-      } else {
-        tdSqm.textContent = "–";
-        tdSqm.title = "No EPC floor-area data for this property type.";
-      }
-      tr.appendChild(tdSqm);
-
-      ["cheapest", "priciest"].forEach(function (which) {
-        var td = document.createElement("td");
-        td.className = "price";
-        var f = o.fares && state.fareRefPoint && o.fares[state.fareRefPoint];
-        var e = f && f[which];
-        if (e && e.monthly_pence != null) {
-          var isTravelcard = e.monthly_basis === "zones_1_6_travelcard";
-          td.textContent = formatFarePence(e.monthly_pence) + "/mo" + (isTravelcard ? " †" : "");
-          var titleParts = [e.station + " (rank " + e.station_rank + " nearest)"];
-          titleParts.push(isTravelcard
-            ? "Includes a Zones 1-6 Travelcard add-on — what most commuters from outside London actually buy alongside their rail ticket."
-            : "Rail-only fare — this station is already inside the TfL zones, no Travelcard add-on needed.");
-          if (e.day_return_pence != null) titleParts.push("Anytime Day Return: " + formatFarePence(e.day_return_pence) + ".");
-          td.title = titleParts.join(" ");
-        } else {
-          td.textContent = "–";
-          td.title = "No fare data for this reference point.";
-        }
-        tr.appendChild(td);
-      });
-
-      var tdScore = document.createElement("td");
-      tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);
-      tr.appendChild(tdScore);
-
-      cols.forEach(function (c) {
-        var cell = o.categories[c.key];
-        var td = document.createElement("td");
-        td.className = "cell";
-        if (cell) {
-          var zeroWeight = !cell.weight_applied || cell.weight_applied <= 0;
-          if (zeroWeight) {
-            td.classList.add("zero-weight");
-            td.title = "Weight is 0 — this column doesn't count toward Total.";
-          } else {
-            td.style.background = rampColor(cell.normalized_score);
-            td.style.color = rampTextColor(cell.normalized_score);
-          }
-          td.textContent = c.isTravel
-            ? (cell.raw_score >= 0 ? cell.raw_score.toFixed(0) + "m" : "–")
-            : cell.raw_score.toFixed(2);
-        } else {
-          td.textContent = "–";
-        }
-        td.addEventListener("click", function (ev) {
-          ev.stopPropagation();
-          toggleDrilldown(o.sector, o.outcode, c.key);
-          setActive(o.sector, false);
-        });
-        tr.appendChild(td);
+      orderedCols.forEach(function (c) {
+        tr.appendChild(renderCellForColumn(o, c));
       });
       body.appendChild(tr);
 
@@ -1694,6 +2217,138 @@
         if (drillCol) body.appendChild(renderDrillRow(o, drillCol));
       }
     });
+  }
+
+  // One <td> per reorderable column -- dispatched by key so renderTable()
+  // can lay them out in whatever order state.columnOrder/orderedColumns()
+  // currently says, instead of a fixed sequence.
+  function renderCellForColumn(o, c) {
+    switch (c.key) {
+      case "outcode": { var tdOut = document.createElement("td"); tdOut.textContent = o.outcode; return tdOut; }
+      case "town": { var tdTown = document.createElement("td"); tdTown.textContent = o.town || "–"; return tdTown; }
+      case "borough": { var tdBorough = document.createElement("td"); tdBorough.textContent = o.borough || "–"; return tdBorough; }
+      case "geo_group": { var tdGroup = document.createElement("td"); tdGroup.textContent = o.geo_group || "–"; return tdGroup; }
+      case "price": return renderPriceCell(o);
+      case "price_per_sqm": return renderSqmCell(o);
+      case "fare_cheapest": return renderFareCell(o, "cheapest");
+      case "fare_priciest": return renderFareCell(o, "priciest");
+      case "total_score": {
+        var tdScore = document.createElement("td");
+        tdScore.className = "score"; tdScore.textContent = o.total_score.toFixed(3);
+        return tdScore;
+      }
+      default: return renderAmenityCell(o, c);
+    }
+  }
+
+  function renderPriceCell(o) {
+    var td = document.createElement("td");
+    td.className = "price";
+    var priceInfo = o.prices && o.prices[state.propertyType];
+    var pv = priceValue(o);
+    if (pv != null) {
+      var usedSqm = !!(priceInfo.price_per_sqm != null && state.sqmSize);
+      td.textContent = formatPrice(pv) + (!usedSqm && priceInfo.grain === "outcode" ? " *" : "");
+      if (usedSqm) {
+        td.title = "Estimated for a " + state.sqmSize + " m² home: £" + Math.round(priceInfo.price_per_sqm).toLocaleString() +
+          "/m² × " + state.sqmSize + " m². Actual median sale price for this sector: " + formatPrice(priceInfo.median_price) + ".";
+      } else {
+        td.title = (priceInfo.grain === "outcode"
+          ? "Sector had too few sales — backed off to the outcode-level estimate. "
+          : "") + priceInfo.transaction_count + " comparable sale(s) used. No £/m² figure for this property type, so showing the actual median sale price.";
+      }
+    } else {
+      td.textContent = "–";
+      td.title = "No price data for this property type.";
+    }
+    return td;
+  }
+
+  function renderSqmCell(o) {
+    var td = document.createElement("td");
+    td.className = "price";
+    var priceInfo = o.prices && o.prices[state.propertyType];
+    if (priceInfo && priceInfo.price_per_sqm != null) {
+      // Two independent caveats can apply to this number, so they get
+      // two independent symbols: "*" = backed off to the outcode level
+      // (same meaning as the Price column's "*"), "†" = this is the
+      // ESTIMATED figure (sector's median price divided by its median
+      // EPC floor area, from unrelated properties) because no confident
+      // address match was found -- not a real per-house price/m². Its
+      // absence means the number came from actual matched sales.
+      var isMatched = priceInfo.price_per_sqm_method === "matched_sales";
+      var grain = isMatched ? priceInfo.price_per_sqm_grain : priceInfo.floor_area_grain;
+      var suffix = (grain === "outcode" ? " *" : "") + (isMatched ? "" : " †");
+      td.textContent = formatPricePerSqm(priceInfo.price_per_sqm) + suffix;
+
+      var titleParts = [];
+      if (isMatched) {
+        titleParts.push("From " + priceInfo.price_per_sqm_matched_count + " real matched sale(s) — each a Land Registry sale joined to its own EPC floor area by address.");
+        if (grain === "outcode") titleParts.push("Sector had too few matched sales — backed off to the outcode-level figure.");
+        if (priceInfo.price_per_sqm_by_size && priceInfo.price_per_sqm_by_size.length) {
+          titleParts.push("By size: " + priceInfo.price_per_sqm_by_size.map(function (b) {
+            return b.size_bin_m2 + "–" + (b.size_bin_m2 + 100) + "m²: " + formatPricePerSqm(b.median_price_per_sqm) + " (" + b.matched_count + ")";
+          }).join(", "));
+        }
+      } else {
+        titleParts.push("Estimated: this sector's median price ÷ its median EPC floor area — two separate figures, not a real per-house ratio (no confident address match found).");
+        if (grain === "outcode") titleParts.push("Sector had too few EPCs on file — backed off to the outcode-level median floor area.");
+        titleParts.push("Median floor area " + Math.round(priceInfo.median_floor_area_m2) + " m² from " + priceInfo.floor_area_certificate_count + " EPC certificate(s).");
+      }
+      td.title = titleParts.join(" ");
+    } else {
+      td.textContent = "–";
+      td.title = "No EPC floor-area data for this property type.";
+    }
+    return td;
+  }
+
+  function renderFareCell(o, which) {
+    var td = document.createElement("td");
+    td.className = "price";
+    var f = o.fares && state.fareRefPoint && o.fares[state.fareRefPoint];
+    var e = f && f[which];
+    if (e && e.monthly_pence != null) {
+      var isTravelcard = e.monthly_basis === "zones_1_6_travelcard";
+      td.textContent = formatFarePence(e.monthly_pence) + "/mo" + (isTravelcard ? " †" : "");
+      var titleParts = [e.station + " (rank " + e.station_rank + " nearest)"];
+      titleParts.push(isTravelcard
+        ? "Includes a Zones 1-6 Travelcard add-on — what most commuters from outside London actually buy alongside their rail ticket."
+        : "Rail-only fare — this station is already inside the TfL zones, no Travelcard add-on needed.");
+      if (e.day_return_pence != null) titleParts.push("Anytime Day Return: " + formatFarePence(e.day_return_pence) + ".");
+      td.title = titleParts.join(" ");
+    } else {
+      td.textContent = "–";
+      td.title = "No fare data for this reference point.";
+    }
+    return td;
+  }
+
+  function renderAmenityCell(o, c) {
+    var cell = o.categories[c.key];
+    var td = document.createElement("td");
+    td.className = "cell";
+    if (cell) {
+      var zeroWeight = !cell.weight_applied || cell.weight_applied <= 0;
+      if (zeroWeight) {
+        td.classList.add("zero-weight");
+        td.title = "Weight is 0 — this column doesn't count toward Total.";
+      } else {
+        td.style.background = rampColor(cell.normalized_score);
+        td.style.color = rampTextColor(cell.normalized_score);
+      }
+      td.textContent = c.isTravel
+        ? (cell.raw_score >= 0 ? cell.raw_score.toFixed(0) + "m" : "–")
+        : cell.raw_score.toFixed(2);
+    } else {
+      td.textContent = "–";
+    }
+    td.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      toggleDrilldown(o.sector, o.outcode, c.key);
+      setActive(o.sector, false);
+    });
+    return td;
   }
 
   // Amenity drill-down detail lives in its own results/latest/amenities
@@ -1812,6 +2467,7 @@
       state.currentPage = pageForSector(sector, visibleSectors());
     }
     renderMap();
+    renderGraph();
     renderTable();
     if (!fromMap) {
       var dot = document.querySelector('.map-dot[data-sector="' + CSS.escape(sector) + '"]');
@@ -1915,6 +2571,7 @@
       recomputeScores();
       renderStatus();
       renderMap();
+      renderGraph();
       renderTable();
     } catch (e) {
       console.error("outcomes render error", e);
@@ -1964,6 +2621,7 @@
       state.sectorsError = (err && err.code) ? (err.code + (err.message ? ": " + err.message : "")) : "load failed";
       renderStatus();
       renderMap();
+      renderGraph();
       renderTable();
     });
   }
@@ -1987,9 +2645,11 @@
       renderSettings();
       renderFilters();
       renderColorBySelect();
+      renderSizeBySelect();
       renderTableHead();
       renderTable();
       renderMap();
+      renderGraph();
     }, function (err) { console.error("config snapshot error", err); });
 
     var sectorsLoaded = false;
@@ -2016,7 +2676,7 @@
     db.doc("compare/current").onSnapshot(function (snap) {
       state.compareList = (snap.exists && snap.data().sectors) || [];
       renderCompareBar();
-      if (state.showCompareOnly) { renderTable(); renderMap(); }
+      if (state.showCompareOnly) { renderTable(); renderMap(); renderGraph(); }
     }, function (err) { console.error("compare list snapshot error", err); });
   }
 
@@ -2026,6 +2686,7 @@
       recomputeScores();
       renderTable();
       renderMap();
+      renderGraph();
       var status = document.getElementById("saveStatus");
       status.textContent = "Recalculated " + new Date().toLocaleTimeString() + " (not saved).";
     });
@@ -2059,6 +2720,7 @@
       renderTableHead();
       renderTable();
       renderMap();
+      renderGraph();
       document.getElementById("saveStatus").textContent = "Reverted locally — click “Save settings” to keep it.";
     });
 
@@ -2071,6 +2733,7 @@
       renderTableHead();
       renderTable();
       renderMap();
+      renderGraph();
     });
 
     document.getElementById("referenceFields").addEventListener("click", function (ev) {
@@ -2084,6 +2747,7 @@
       renderTableHead();
       renderTable();
       renderMap();
+      renderGraph();
     });
 
     // Weight edits recompute normalized/total scores instantly from the
@@ -2097,6 +2761,7 @@
       recomputeScores();
       renderTable();
       renderMap();
+      renderGraph();
     }
     document.getElementById("categoryFields").addEventListener("input", handleWeightInput);
     document.getElementById("referenceFields").addEventListener("input", handleWeightInput);
@@ -2118,9 +2783,11 @@
     renderStatus();
     renderFilters();
     renderColorBySelect();
+    renderSizeBySelect();
     renderTableHead();
     renderTable();
     renderMap();
+    renderGraph();
     renderLegend();
     wireButtons();
     wireFilterBar();
@@ -2129,6 +2796,9 @@
     wireCompareBar();
     wireFooter();
     wireMap();
+    wireTabs();
+    wireGraph();
+    wireSqmInput();
 
     if (!window.claude || !window.claude.use) return;
     window.claude.use("db").then(function (db) {
