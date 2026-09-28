@@ -446,6 +446,11 @@
     { key: "<=", label: "&le;" },
     { key: "=", label: "=" }
   ];
+  var TEXT_FILTER_OPS = [
+    { key: "contains", label: "contains" },
+    { key: "=", label: "=" }
+  ];
+  var GEO_GROUPS = ["Inner London", "Greater London", "Home Counties"];
   var PAGE_SIZES = [25, 50, 100, "all"];
 
   // Columns that always appear, before the configurable amenity/travel
@@ -525,7 +530,10 @@
     return [
       { key: "total_score", label: "Total" },
       { key: "fare_cheapest", label: "Cheapest fare (£/month)" },
-      { key: "fare_priciest", label: "Priciest fare (£/month)" }
+      { key: "fare_priciest", label: "Priciest fare (£/month)" },
+      { key: "sector", label: "Postcode", isText: true },
+      { key: "borough", label: "Borough", isText: true },
+      { key: "geo_group", label: "Group", isText: true, options: GEO_GROUPS }
     ].concat(columns());
   }
 
@@ -533,6 +541,7 @@
     if (key === "total_score") return o.total_score;
     if (key === "fare_cheapest") return fareExtremeValue(o, "cheapest");
     if (key === "fare_priciest") return fareExtremeValue(o, "priciest");
+    if (key === "sector" || key === "borough" || key === "geo_group") return o[key] || "";
     var cell = o.categories[key];
     return cell ? cell.raw_score : null;
   }
@@ -557,8 +566,16 @@
       list = list.filter(function (o) { return state.compareList.indexOf(o.sector) !== -1; });
     }
     if (!state.filters.length) return list;
+    var cols = filterableColumns();
     return list.filter(function (o) {
       return state.filters.every(function (f) {
+        var col = cols.find(function (c) { return c.key === f.key; });
+        if (col && col.isText) {
+          if (f.value === "" || f.value == null) return true;
+          var strVal = (cellValue(o, f.key) || "").toString().toLowerCase();
+          var target2 = f.value.toString().toLowerCase();
+          return f.op === "=" ? strVal === target2 : strVal.indexOf(target2) !== -1;
+        }
         var v = cellValue(o, f.key);
         if (v == null || isNaN(v) || f.value === "" || f.value == null) return true;
         var target = Number(f.value);
@@ -1130,6 +1147,7 @@
     state.filters.forEach(function (f, i) {
       var row = document.createElement("div");
       row.className = "filter-row";
+      var col = cols.find(function (c) { return c.key === f.key; }) || cols[0];
 
       var colSelect = document.createElement("select");
       colSelect.dataset.idx = i; colSelect.dataset.field = "key";
@@ -1142,15 +1160,33 @@
 
       var opSelect = document.createElement("select");
       opSelect.dataset.idx = i; opSelect.dataset.field = "op";
-      FILTER_OPS.forEach(function (o) {
+      (col.isText ? TEXT_FILTER_OPS : FILTER_OPS).forEach(function (o) {
         var opt = document.createElement("option");
         opt.value = o.key; opt.innerHTML = o.label;
         if (o.key === f.op) opt.selected = true;
         opSelect.appendChild(opt);
       });
 
-      var valInput = document.createElement("input");
-      valInput.type = "number"; valInput.step = "any";
+      var valInput;
+      if (col.isText && col.options) {
+        valInput = document.createElement("select");
+        var blankOpt = document.createElement("option");
+        blankOpt.value = ""; blankOpt.textContent = "— choose —";
+        valInput.appendChild(blankOpt);
+        col.options.forEach(function (optVal) {
+          var opt = document.createElement("option");
+          opt.value = optVal; opt.textContent = optVal;
+          if (f.value === optVal) opt.selected = true;
+          valInput.appendChild(opt);
+        });
+      } else if (col.isText) {
+        valInput = document.createElement("input");
+        valInput.type = "text";
+        valInput.placeholder = "e.g. " + (col.key === "sector" ? "SW11 1" : "Westminster");
+      } else {
+        valInput = document.createElement("input");
+        valInput.type = "number"; valInput.step = "any";
+      }
       valInput.dataset.idx = i; valInput.dataset.field = "value";
       valInput.value = f.value == null ? "" : f.value;
 
@@ -1195,14 +1231,20 @@
         renderMap();
       }
     });
-    bar.addEventListener("change", function (ev) {
+    bar.addEventListener("input", function (ev) {
       var idx = ev.target.dataset.idx;
       if (idx == null) return;
       var field = ev.target.dataset.field;
       var f = state.filters[Number(idx)];
       if (!f) return;
-      f[field] = field === "value" ? ev.target.value : ev.target.value;
+      f[field] = ev.target.value;
       state.currentPage = 1;
+      if (field === "key") {
+        var col = filterableColumns().find(function (c) { return c.key === f.key; });
+        f.op = col && col.isText ? "contains" : ">";
+        f.value = "";
+        renderFilters();
+      }
       renderTable();
       renderMap();
     });
